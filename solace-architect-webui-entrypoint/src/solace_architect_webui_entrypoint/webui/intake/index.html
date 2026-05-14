@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <title>Solace Architect — Intake</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    .intake-layout { display: grid; grid-template-columns: 1fr 320px; gap: 24px; padding: 24px; }
+    .intake-form fieldset { margin-bottom: 16px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; }
+    .intake-form legend { font-weight: 600; color: var(--primary); padding: 0 8px; }
+    .intake-form label { display: block; margin: 8px 0 4px; font-size: 13px; color: var(--muted); }
+    .intake-form input, .intake-form textarea, .intake-form select {
+      width: 100%; padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px;
+      background: var(--bg); color: var(--text); font-family: 'Figtree', sans-serif; font-size: 14px;
+    }
+    .intake-form textarea { min-height: 60px; }
+    .intake-actions { display: flex; gap: 8px; margin-top: 16px; }
+    .intake-actions button { padding: 8px 16px; border: 1px solid var(--primary); background: var(--primary); color: white; border-radius: 4px; cursor: pointer; }
+    .intake-actions button.secondary { background: transparent; color: var(--primary); }
+    .preview-panel { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 16px; position: sticky; top: 80px; height: fit-content; }
+    .preview-panel h3 { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 12px; }
+    .preview-item { padding: 4px 0; font-size: 13px; }
+    .preview-item.skipped { color: var(--muted); text-decoration: line-through; }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <div class="logo"><span class="logo-mark">SA</span><span class="logo-title">Solace Architect — Intake</span></div>
+    <div style="flex:1"></div>
+    <a href="/" style="color: var(--muted); font-size: 13px;">← Back to dashboard</a>
+  </header>
+
+  <div class="intake-layout">
+    <form class="intake-form" id="intake-form">
+      <fieldset>
+        <legend>Project</legend>
+        <label>Name</label><input name="project_name" required>
+        <label>Type</label>
+        <select name="project_type">
+          <option>new-build</option><option>migration</option><option>extension</option><option>sam-integration</option>
+        </select>
+        <label>Vertical</label><input name="vertical" placeholder="e.g. retail-banking, capital-markets, manufacturing">
+      </fieldset>
+
+      <fieldset>
+        <legend>Systems</legend>
+        <label>System list (one per line, name: role : protocol)</label>
+        <textarea name="systems" placeholder="Core Banking : producer : REST API"></textarea>
+      </fieldset>
+
+      <fieldset>
+        <legend>Requirements</legend>
+        <label>Delivery mode</label>
+        <select name="requirements.delivery_mode">
+          <option value="direct">Direct</option><option value="guaranteed">Guaranteed</option><option value="mixed">Mixed</option>
+        </select>
+        <label>Topology</label>
+        <select name="requirements.topology">
+          <option>single-site</option><option>multi-site</option><option>multi-region</option><option>hybrid-cloud</option>
+        </select>
+        <label>Processing guarantee</label>
+        <select name="requirements.processing_guarantee">
+          <option>best-effort</option><option>at-least-once</option><option>exactly-once</option>
+        </select>
+        <label>Existing messaging (leave blank for greenfield)</label>
+        <input name="existing_messaging" placeholder="e.g. IBM MQ, Kafka, TIBCO EMS">
+      </fieldset>
+
+      <fieldset>
+        <legend>Preferences</legend>
+        <label><input type="checkbox" name="preferences.provision_event_portal"> Provision Event Portal model into a live tenant (opt-in; requires SOLACE_API_TOKEN)</label>
+      </fieldset>
+
+      <div class="intake-actions">
+        <button type="button" id="submit">Start engagement</button>
+        <button type="button" class="secondary" id="save-yaml">Save as YAML</button>
+        <button type="button" class="secondary" id="save-md">Save as Markdown</button>
+        <button type="button" class="secondary" id="load-yaml">Load from YAML</button>
+        <input type="file" id="yaml-file" accept=".yaml,.yml" style="display:none">
+      </div>
+    </form>
+
+    <aside class="preview-panel">
+      <h3>This engagement will run</h3>
+      <div id="preview"><em>Fill in fields to see the routing preview…</em></div>
+    </aside>
+  </div>
+
+  <script>
+    function readForm() {
+      const fd = new FormData(document.getElementById("intake-form"));
+      const obj = {};
+      for (const [k, v] of fd.entries()) {
+        // Nested keys with dots
+        const parts = k.split(".");
+        let cur = obj;
+        for (let i = 0; i < parts.length - 1; i++) {
+          cur[parts[i]] = cur[parts[i]] || {};
+          cur = cur[parts[i]];
+        }
+        cur[parts[parts.length - 1]] = v;
+      }
+      // Parse systems
+      if (obj.systems) {
+        obj.systems = obj.systems.split("\n").map(line => {
+          const [name, role, protocol] = line.split(":").map(s => s.trim());
+          return name ? { name, role, protocol } : null;
+        }).filter(Boolean);
+      }
+      // Checkbox boolean
+      if (obj.preferences) {
+        obj.preferences.provision_event_portal = obj.preferences.provision_event_portal === "on";
+      }
+      return obj;
+    }
+
+    let previewTimer;
+    function schedulePreview() {
+      clearTimeout(previewTimer);
+      previewTimer = setTimeout(updatePreview, 300);
+    }
+    document.getElementById("intake-form").addEventListener("input", schedulePreview);
+    document.getElementById("intake-form").addEventListener("change", schedulePreview);
+
+    async function updatePreview() {
+      const intake = readForm();
+      const r = await fetch("/api/intake/preview", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(intake)
+      });
+      const d = await r.json();
+      document.getElementById("preview").innerHTML =
+        (d.included_steps || []).map(s => `<div class="preview-item">✓ ${s.step}${s.scope ? " ["+s.scope+"]" : ""}</div>`).join("") +
+        (d.skipped_steps || []).map(s => `<div class="preview-item skipped">✗ ${s.step} — ${s.skip_reason}</div>`).join("") +
+        `<div style="margin-top:12px;font-size:11px;color:var(--muted)">~${d.estimated_minutes || 0} min estimated</div>`;
+    }
+
+    document.getElementById("save-yaml").addEventListener("click", async () => {
+      const r = await fetch("/api/intake/download-yaml", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(readForm())
+      });
+      const yaml = await r.text();
+      const blob = new Blob([yaml], { type: "text/yaml" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = (readForm().project_name || "intake") + ".yaml";
+      a.click();
+    });
+
+    document.getElementById("save-md").addEventListener("click", async () => {
+      const r = await fetch("/api/intake/download-markdown", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(readForm())
+      });
+      const md = await r.text();
+      const blob = new Blob([md], { type: "text/markdown" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = (readForm().project_name || "intake") + ".md";
+      a.click();
+    });
+
+    document.getElementById("load-yaml").addEventListener("click", () => document.getElementById("yaml-file").click());
+    document.getElementById("yaml-file").addEventListener("change", async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const text = await file.text();
+      const r = await fetch("/api/intake/parse-yaml", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ yaml_text: text }),
+      });
+      const d = await r.json();
+      if (d.error) {
+        alert("Could not parse YAML: " + d.error);
+        return;
+      }
+      hydrateForm(d.parsed_brief || {});
+      schedulePreview();
+      if ((d.open_items || []).length) {
+        const blocking = d.open_items.filter(q => q.severity === "blocking").length;
+        const advisory = d.open_items.length - blocking;
+        document.getElementById("preview").insertAdjacentHTML("beforeend",
+          `<div style="margin-top:8px;color:#d97706;font-size:12px">⚠ ${blocking} blocking · ${advisory} advisory open-items detected</div>`);
+      }
+    });
+
+    function setValue(name, value) {
+      const el = document.querySelector(`[name="${name}"]`);
+      if (!el) return;
+      if (el.type === "checkbox") el.checked = !!value;
+      else el.value = value ?? "";
+    }
+    function hydrateForm(brief) {
+      // Flatten nested dicts back to dotted names
+      function walk(prefix, obj) {
+        for (const [k, v] of Object.entries(obj)) {
+          const key = prefix ? `${prefix}.${k}` : k;
+          if (v && typeof v === "object" && !Array.isArray(v)) walk(key, v);
+          else if (Array.isArray(v) && key === "systems") {
+            setValue("systems", v.map(s => `${s.name || ""} : ${s.role || ""} : ${s.protocol || ""}`).join("\n"));
+          } else {
+            setValue(key, v);
+          }
+        }
+      }
+      walk("", brief);
+    }
+
+    document.getElementById("submit").addEventListener("click", async () => {
+      const intake = readForm();
+      if (!intake.project_name) {
+        alert("Project name is required.");
+        return;
+      }
+      const r = await fetch("/api/intake/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(intake),
+      });
+      const d = await r.json();
+      if (d.error) {
+        alert("Submit failed: " + d.error);
+        return;
+      }
+      // Land on the new project's Overview view
+      localStorage.setItem("solace-architect-active-project", d.engagement_id);
+      window.location.href = "/#overview";
+    });
+  </script>
+</body>
+</html>

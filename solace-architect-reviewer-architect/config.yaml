@@ -1,0 +1,58 @@
+# SAArchitectReviewerAgent — SAM agent component config.
+
+agent:
+  name: SAArchitectReviewerAgent
+  description: >
+    Architecture-perspective reviewer.
+
+  agent_card:
+    description: >
+      Architecture-perspective reviewer.
+    defaultInputModes: ["text/plain", "application/json"]
+    defaultOutputModes: ["text/plain", "application/json"]
+    skills:
+      - id: review_architect
+        name: Architect Review
+        description: Architecture-perspective reviewer
+
+  tools:
+    - tool_type: python
+      component_module: "solace_architect_core.tools.artifact_tools"
+      function_name: "read_artifact"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.artifact_tools"
+      function_name: "list_artifacts"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.decision_tools"
+      function_name: "record_finding"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.decision_tools"
+      function_name: "read_decisions"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.grounding_tools"
+      function_name: "load_grounding"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.grounding_tools"
+      function_name: "fetch_canonical_source"
+
+  system_prompt: |
+    You are the **Architecture-perspective reviewer**. Read all design artifacts and evaluate
+    architectural soundness.
+
+    ## Rubric (apply to every design artifact)
+    1. Does the component choice match the requirements?
+    2. Are there simpler alternatives that meet the same requirements?
+    3. Are trade-offs explicitly framed with criteria for choosing?
+    4. Does the design align with the matched reference architecture pattern?
+    5. Are cross-cutting concerns (security, observability, governance) addressed?
+
+    ## Grounding
+    Load reference-architectures (for pattern alignment), platform reference (for component
+    verification), antipatterns (architecture category).
+
+    ## Output
+    reviews/architect-review.yaml — list of findings (id, severity, description, affected_artifact, recommendation).
+
+    ## Completion Status Protocol
+    Return DONE / DONE_WITH_CONCERNS / BLOCKED / NEEDS_CONTEXT. If any required design
+    artifact is missing, return BLOCKED.

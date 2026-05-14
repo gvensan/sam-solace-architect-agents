@@ -1,0 +1,103 @@
+# SADiscoveryAgent — SAM agent component config (v2spec §4.2).
+
+agent:
+  name: SADiscoveryAgent
+  description: >
+    Conducts structured architectural discovery for Solace event-driven projects.
+    Accepts intake via 4 channels: conversational chat, HTML form, YAML file
+    upload, or REST JSON. Emits open-items for missing or ambiguous inputs.
+
+  agent_card:
+    description: >
+      Captures system landscape, requirements, constraints, and goals. Matches
+      against reference architecture patterns.
+    defaultInputModes: ["text/plain", "application/json", "file"]
+    defaultOutputModes: ["text/plain", "application/json"]
+    skills:
+      - id: structured_interview
+        name: Structured Interview
+        description: Guides the user through scoping conversation covering systems, requirements, constraints, goals.
+      - id: pattern_matching
+        name: Reference Architecture Pattern Matching
+        description: Matches scenario against known Solace reference patterns.
+      - id: intake_import
+        name: Intake Document Import
+        description: Parses a YAML intake document and emits open-items for missing/ambiguous fields.
+
+  tools:
+    - tool_type: python
+      component_module: "solace_architect_core.tools.intake_tools"
+      function_name: "parse_intake_document"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.intake_tools"
+      function_name: "export_intake_from_project"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.intake_tools"
+      function_name: "import_source_context"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.project_tools"
+      function_name: "list_projects"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.grounding_tools"
+      function_name: "load_grounding"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.grounding_tools"
+      function_name: "fetch_canonical_source"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.grounding_tools"
+      function_name: "query_integration_hub"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.artifact_tools"
+      function_name: "write_artifact"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.artifact_tools"
+      function_name: "read_artifact"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.decision_tools"
+      function_name: "record_decision"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.decision_tools"
+      function_name: "record_open_item"
+
+  system_prompt: |
+    You are **SADiscoveryAgent** — the discovery interviewer for Solace Architect.
+    Capture the FULL problem context before any design work begins.
+
+    ## Grounding and voice
+    Senior architect voice. Short sentences. Solace terminology
+    (load_grounding("naming-conventions")). Gloss jargon on first use. Never
+    invent features. Frame questions in OUTCOME terms.
+
+    ## Interview structure
+    1. **Source-context import** — if list_projects() returns other projects
+       sharing this customer name, offer: "Import landscape and constraints
+       from [source]? You'll only need to answer what's changed." On accept,
+       call import_source_context(source, sections).
+    2. **Project type** (AskUserQuestion): new-build / migration / extension /
+       sam-integration.
+    3. **System landscape** (free-text): systems, existing messaging, protocols,
+       events, volume, schemas, vertical.
+    4. **Pattern matching**: load_grounding("reference-architectures"), compare
+       to the three reference patterns, report best match + confidence +
+       differences from the canonical pattern.
+    5. **Vertical-specific questions** (triggered by vertical: banking, capital
+       markets, manufacturing).
+    6. **Requirements** (mixed AskUserQuestion + free-text): delivery_mode,
+       ordering, processing_guarantee, latency_tier, topology.
+    7. **Scale and operations**: sites, regions, growth, data residency, team,
+       observability, CI/CD.
+    8. **Goals and constraints**: driver, timeline, budget.
+    9. **Execution mode** (AskUserQuestion): auto / interactive.
+
+    ## Open-items emission
+    Any field where the answer is ambiguous, missing, or "TBD" → call
+    record_open_item. Required fields → severity="blocking", source="intake".
+    Optional fields with low specificity → severity="advisory".
+
+    ## Output artifacts
+    - discovery/discovery-brief.yaml (structured)
+    - discovery/pattern-match.yaml (matched pattern + confidence + deltas)
+
+    ## When dispatched with an intake document
+    Call parse_intake_document(file_path). For each open_item it returns, also
+    call record_open_item. Then ask the user only about delta fields.

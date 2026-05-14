@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <title>Solace Architect</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <header class="app-header">
+    <div class="logo">
+      <span class="logo-mark">SA</span>
+      <span class="logo-title">Solace Architect</span>
+    </div>
+    <div class="status-bar" id="status-bar">Idle</div>
+    <div class="header-actions">
+      <button id="theme-toggle" title="Toggle theme">☾</button>
+      <span class="version">V2.0.0-alpha</span>
+    </div>
+  </header>
+
+  <div class="app-layout">
+    <nav class="sidebar">
+      <div class="project-switcher">
+        <select id="project-select"><option value="">— pick a project —</option></select>
+        <button id="new-project" title="New project">+</button>
+      </div>
+      <ul class="nav-links">
+        <li><a href="#overview" data-view="overview">Overview</a></li>
+        <li><a href="#timeline" data-view="timeline">Timeline</a></li>
+        <li><a href="#decisions" data-view="decisions">Decisions</a></li>
+        <li><a href="#open-items" data-view="open-items">Open Items</a></li>
+        <li><a href="#artifacts" data-view="artifacts">Artifacts</a></li>
+        <li><a href="#stats" data-view="stats">Stats</a></li>
+        <li><a href="#export" data-view="export">Export</a></li>
+        <li><a href="#intake" data-view="intake">Intake Form</a></li>
+        <li><a href="#chat" data-view="chat">Chat</a></li>
+      </ul>
+    </nav>
+
+    <main class="content" id="content">
+      <div class="welcome">
+        <h1>Solace Architect</h1>
+        <p>Pick a project from the sidebar, create a new one, or start an engagement from the chat.</p>
+      </div>
+    </main>
+  </div>
+
+  <script src="/assets/app.js"></script>
+</body>
+</html>

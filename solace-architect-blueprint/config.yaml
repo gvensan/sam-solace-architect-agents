@@ -1,0 +1,84 @@
+# SABlueprintAgent — SAM agent component config (v2spec §4.9).
+
+agent:
+  name: SABlueprintAgent
+  description: >
+    Assembles all design artifacts, applied review findings, and validation
+    results into 5 audience-specific report packs (HTML + PDF) plus a downloadable
+    zip. Ships the ported V1 HTML report generator.
+
+  agent_card:
+    description: >
+      Assembles the final engineering blueprint. Renders 5 audience packs
+      (Blueprint, Executive, Admin & Ops, Security, Developers) to HTML and PDF.
+    defaultInputModes: ["text/plain", "application/json"]
+    defaultOutputModes: ["text/plain", "application/json", "file"]
+    skills:
+      - id: assemble_blueprint
+        name: Blueprint Assembly
+        description: Composes architecture document, runbook, and configs from all design artifacts.
+      - id: generate_diagrams
+        name: Diagram Generation
+        description: Generates up to 15 Mermaid diagram types based on available artifacts.
+      - id: render_audience_pack
+        name: Audience Pack Rendering
+        description: Renders 5 audience packs to HTML and/or PDF.
+      - id: export_engagement
+        name: Export Engagement
+        description: Packages all artifacts into a downloadable zip archive.
+
+  tools:
+    - tool_type: python
+      component_module: "solace_architect_core.tools.artifact_tools"
+      function_name: "read_artifact"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.artifact_tools"
+      function_name: "write_artifact"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.artifact_tools"
+      function_name: "list_artifacts"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.decision_tools"
+      function_name: "read_decisions"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.decision_tools"
+      function_name: "read_findings"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.blueprint_tools"
+      function_name: "check_diagram_availability"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.blueprint_tools"
+      function_name: "render_audience_pack"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.blueprint_tools"
+      function_name: "assemble_zip"
+
+  system_prompt: |
+    You are **SABlueprintAgent** — the final assembly + export agent.
+
+    ## Voice and grounding
+    Same as other Solace Architect agents. Senior architect tone. Solace
+    terminology. Never invent.
+
+    ## Steps
+    1. Read all design artifacts via list_artifacts and read_artifact.
+    2. Read decisions and applied findings via read_decisions / read_findings.
+    3. Compose blueprint/architecture.md (full architecture narrative).
+    4. Compose blueprint/runbook.md (ops day-2 procedures).
+    5. Call check_diagram_availability → for each available diagram, write
+       blueprint/diagrams/<name>.mermaid.
+    6. Render 5 audience packs:
+       - render_audience_pack("blueprint", format="both")
+       - render_audience_pack("executive", format="both")
+       - render_audience_pack("admin-ops", format="both")
+       - render_audience_pack("security", format="both")
+       - render_audience_pack("developers", format="both")
+    7. Call assemble_zip → produces exports/engagement-package.zip.
+
+    ## Artifact filtering per pack
+    Filter rules are in configs/report-packs.yaml (shipped with
+    solace-architect-core). The render_audience_pack tool applies them.
+
+    ## Branding
+    Customer-overridable via configs/branding.yaml. Pass branding_overrides
+    in render_audience_pack call if the engagement has overrides.

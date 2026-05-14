@@ -1,0 +1,106 @@
+# SAProvisioningAgent — SAM agent component config.
+
+agent:
+  name: SAProvisioningAgent
+  description: >
+    Live EP provisioning agent (opt-in).
+
+  agent_card:
+    description: >
+      Live EP provisioning agent (opt-in).
+    defaultInputModes: ["text/plain", "application/json"]
+    defaultOutputModes: ["text/plain", "application/json"]
+    skills:
+      - id: provision_domains
+        name: Provisioning
+        description: Live EP provisioning agent (opt-in)
+
+  tools:
+    - tool_type: python
+      component_module: "solace_architect_core.tools.artifact_tools"
+      function_name: "read_artifact"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.artifact_tools"
+      function_name: "write_artifact"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.artifact_tools"
+      function_name: "list_artifacts"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.decision_tools"
+      function_name: "record_decision"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.decision_tools"
+      function_name: "record_open_item"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.ep_designer_mcp_tools"
+      function_name: "verify_tenant_access"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.ep_designer_mcp_tools"
+      function_name: "list_application_domains"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.ep_designer_mcp_tools"
+      function_name: "create_application_domain"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.ep_designer_mcp_tools"
+      function_name: "list_schemas"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.ep_designer_mcp_tools"
+      function_name: "create_schema"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.ep_designer_mcp_tools"
+      function_name: "create_schema_version"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.ep_designer_mcp_tools"
+      function_name: "list_events"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.ep_designer_mcp_tools"
+      function_name: "create_event"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.ep_designer_mcp_tools"
+      function_name: "create_event_version"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.ep_designer_mcp_tools"
+      function_name: "list_applications"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.ep_designer_mcp_tools"
+      function_name: "create_application"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.ep_designer_mcp_tools"
+      function_name: "export_application_asyncapi"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.ep_designer_mcp_tools"
+      function_name: "record_provisioning_state"
+
+  system_prompt: |
+    You are **SAProvisioningAgent** — the LIVE EP provisioning agent. **Strictly opt-in.**
+
+    ## Pre-flight (REQUIRED)
+    1. Read discovery-brief.yaml. If preferences.provision_event_portal != true →
+       return DONE_WITH_CONCERNS with reason "provisioning not requested in intake".
+       Do NOT proceed.
+    2. Call verify_tenant_access(). If available == false → return BLOCKED with the
+       remediation text from the tool. Do NOT proceed. **NEVER silently skip.**
+
+    ## Per-layer reuse-by-content-match (do this for each layer)
+    For each layer in [domains, schemas, events, applications]:
+      1. List existing objects via list_*.
+      2. For each object in the EP model, match by:
+         - domains, applications: exact name match
+         - schemas: name + content hash
+         - events: name + version, plus schema_version_id consistency
+      3. If matched → record_provisioning_state(created=false). Skip create.
+      4. If no match → create_*(...). On success, record_provisioning_state(created=true).
+      5. On error → record what was committed; record_open_item(severity="blocking",
+         source="provisioning"); status="partial".
+
+    ## Interactive mode
+    Pause between layers and present a confirmation. In auto mode, proceed unless error.
+
+    ## Final step
+    For each provisioned application → export_application_asyncapi(); write to
+    provisioning/asyncapi/<application_name>.yaml.
+
+    ## Outputs
+    - provisioning/provisioned.yaml
+    - provisioning/provisioning-report.md
+    - provisioning/asyncapi/*.yaml (one per provisioned application)

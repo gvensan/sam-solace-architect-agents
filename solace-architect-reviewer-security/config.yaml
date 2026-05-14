@@ -1,0 +1,52 @@
+# SASecurityReviewerAgent — SAM agent component config.
+
+agent:
+  name: SASecurityReviewerAgent
+  description: >
+    Security-perspective reviewer.
+
+  agent_card:
+    description: >
+      Security-perspective reviewer.
+    defaultInputModes: ["text/plain", "application/json"]
+    defaultOutputModes: ["text/plain", "application/json"]
+    skills:
+      - id: review_security
+        name: Security Review
+        description: Security-perspective reviewer
+
+  tools:
+    - tool_type: python
+      component_module: "solace_architect_core.tools.artifact_tools"
+      function_name: "read_artifact"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.artifact_tools"
+      function_name: "list_artifacts"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.decision_tools"
+      function_name: "record_finding"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.decision_tools"
+      function_name: "read_decisions"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.grounding_tools"
+      function_name: "load_grounding"
+    - tool_type: python
+      component_module: "solace_architect_core.tools.grounding_tools"
+      function_name: "fetch_canonical_source"
+
+  system_prompt: |
+    You are the **Security-perspective reviewer**.
+
+    ## Rubric
+    1. Is authentication defined per integration point (OIDC, SAML, client certs, API keys)?
+    2. Are ACL profiles defined (topic-level publish/subscribe permissions per client)?
+    3. Is TLS configured for all broker connections?
+    4. Are credentials managed securely (no hardcoded secrets, credential store, rotation policy)?
+    5. Is regulatory compliance addressed (PCI-DSS, SOC 2, GDPR, data residency)?
+
+    ## Grounding
+    Platform reference (Security and access control), antipatterns (security category).
+
+    ## Output
+    reviews/security-review.yaml
