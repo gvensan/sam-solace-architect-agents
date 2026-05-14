@@ -45,20 +45,35 @@ pip install -e ./plugins/solace-architect-webui-entrypoint/[test]
 
 Required environment (`.env`):
 
+### Solace broker (client credentials only — never SEMP / admin)
 | Variable | Default | Description |
 |---|---|---|
-| `NAMESPACE` | *(required)* | A2A namespace; fails loud if unset. Use `solace-architect-dev` for local testing. |
+| `NAMESPACE` | *(required)* | A2A namespace; fails loud if unset. Use `sa-dev` for local testing. |
 | `SOLACE_BROKER_URL` | `ws://localhost:8008` | Broker WebSocket URL. |
-| `SOLACE_BROKER_USERNAME` | `default` | — |
+| `SOLACE_BROKER_USERNAME` | `default` | **Client username** with pub/sub rights — NOT an admin / SEMP user. |
 | `SOLACE_BROKER_PASSWORD` | `default` | — |
 | `SOLACE_BROKER_VPN` | `default` | — |
-| `WEBUI_PORT` | `8080` | HTTP listener port. |
+| `SOLACE_DEV_MODE` | `false` | Set `true` for local Docker broker (skips TLS verification + production-only checks). |
+
+### LLM (LiteLLM via SAM/ADK)
+| Variable | Default | Description |
+|---|---|---|
+| `LLM_SERVICE_GENERAL_MODEL_NAME` | *(required)* | LiteLLM provider-prefixed model, e.g. `anthropic/claude-sonnet-4-20250514`, `openai/gpt-4o`, `gemini/gemini-1.5-pro`, or a custom proxy alias. |
+| `LLM_SERVICE_ENDPOINT` | *(blank)* | Leave blank for cloud providers; set for LiteLLM proxies, Azure OpenAI, Ollama, or any self-hosted LLM. |
+| `LLM_SERVICE_API_KEY` | *(required)* | Provider API key (or LiteLLM-proxy key). |
+
+### WebUI entrypoint
+| Variable | Default | Description |
+|---|---|---|
+| `WEBUI_PORT` | `8080` | HTTP listener port. Change if 8080 conflicts (e.g., broker admin UI). |
 | `WEBUI_HOST` | `0.0.0.0` | Bind address. |
-| `WEBUI_ENTRYPOINT_ID` | `sa-webui-ep-01` | Unique gateway ID (change if running multiple instances against one broker). |
+| `WEBUI_ENTRYPOINT_ID` | `sa-webui-ep-01` | Unique entrypoint ID — change if running multiple instances against one broker. |
 | `AUTH_TYPE` | `none` | `none` (anonymous, Phase 1) or `oidc` (Phase 2). |
 | `OIDC_ISSUER`, `OIDC_CLIENT_ID` | — | Only when `AUTH_TYPE=oidc`. |
 | `SA_STORAGE_ROOT` | `/tmp/sam-solace-architect` | Where engagement artifacts are persisted. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`/`INFO`/`WARNING`/`ERROR`. |
+
+> **No broker admin permissions needed.** Solace Architect plugins do messaging only — they never create VPNs, queues, or ACL profiles via SEMP. Those broker-admin operations stay in your IaC + Mission Control workflow.
 
 ## Run
 
