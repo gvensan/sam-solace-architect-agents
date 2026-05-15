@@ -1392,11 +1392,39 @@ function init() {
   if (document.querySelectorAll('#systems-body tr').length === 0) addSystemRow();
   if (document.querySelectorAll('#events-body tr').length === 0) addEventRow();
 
-  // Load any saved draft
-  loadDraft();
+  // Edit mode: /intake/edit/{engagement_id} — hydrate from saved intake.json
+  // (the V1 form has no notion of edit; treat as load-then-resubmit. The
+  //  intake_submit handler upserts under the user's namespace.)
+  const editMatch = window.location.pathname.match(/^\/intake\/edit\/([^/]+)/);
+  if (editMatch) {
+    const eid = decodeURIComponent(editMatch[1]);
+    loadFromServer(eid);
+  } else {
+    // Load any saved draft (new-project flow)
+    loadDraft();
+  }
   updateProgress();
   updatePreview();
   updateCatalogSummary();
+}
+
+async function loadFromServer(engagement_id) {
+  try {
+    const r = await fetch(`/api/intake/load/${encodeURIComponent(engagement_id)}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    const intake = (d && d.intake) || null;
+    if (!intake) return;
+    loadData(intake);
+    document.title = `Edit intake — ${(intake.project && intake.project.name) || engagement_id}`;
+    const header = document.querySelector('h1, .intake-header h1, header h1');
+    if (header && /intake/i.test(header.textContent || '')) {
+      header.textContent = `Edit intake — ${(intake.project && intake.project.name) || engagement_id}`;
+    }
+  } catch (e) {
+    console.error('Failed to load intake for edit', e);
+    alert('Could not load this project\'s intake. The new-project form is shown instead.');
+  }
 }
 
 document.addEventListener('DOMContentLoaded', init);

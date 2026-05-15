@@ -195,6 +195,29 @@ body[data-sidebar="open"] .sidebar-rail { display: none; }
 }
 .hidden { display: none !important; }
 
+/* Sidebar search (above project list) */
+.sidebar-search {
+  display: block; width: calc(100% - 32px); margin: 0 16px 8px;
+  padding: 6px 10px; font-size: 13px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--text);
+  font-family: 'Figtree', sans-serif;
+}
+.sidebar-search:focus { outline: none; border-color: var(--accent); }
+
+/* Project link with row of action buttons */
+.project-link-row { display: flex; align-items: stretch; }
+.project-link-row .project-link { flex: 1; min-width: 0; }
+.project-link-row .project-action-btn {
+  border: none; background: transparent; cursor: pointer;
+  color: var(--muted); padding: 0 8px; font-size: 14px;
+}
+.project-link-row .project-action-btn:hover { color: var(--accent); }
+
+/* Header settings + logout */
+.settings-link, .logout-btn { padding: 6px 8px; }
+.settings-link svg, .logout-btn svg { display: block; }
+
 /* ──────────────────────────────────────────────────────────────────────────
  * Main content
  * ────────────────────────────────────────────────────────────────────────── */
@@ -247,7 +270,34 @@ body[data-chat="closed"] .chat-panel { display: none; }
   background: var(--bg);
 }
 .chat-title { font-weight: 600; color: var(--primary); font-size: 14px; }
-.chat-header .icon-btn { padding: 2px 8px; font-size: 16px; line-height: 1; }
+.chat-header-actions { display: flex; align-items: center; gap: 6px; }
+.chat-header .icon-btn { padding: 2px 8px; font-size: 13px; line-height: 1; }
+#chat-new { font-weight: 600; }
+#chat-close { font-size: 16px; }
+
+.chat-attach-btn {
+  padding: 6px 8px; cursor: pointer; line-height: 0;
+  display: inline-flex; align-items: center;
+}
+.chat-attach-list {
+  display: flex; flex-wrap: wrap; gap: 6px;
+}
+.chat-attach-list:empty { display: none; }
+.chat-attach-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 8px; border-radius: 12px;
+  background: var(--surface); border: 1px solid var(--border);
+  font-size: 11px; color: var(--text);
+  max-width: 220px;
+}
+.chat-attach-chip .chat-attach-name {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chat-attach-chip button {
+  background: none; border: none; color: var(--muted);
+  cursor: pointer; padding: 0; font-size: 13px; line-height: 1;
+}
+.chat-attach-chip button:hover { color: var(--accent); }
 
 .chat-log {
   flex: 1; overflow-y: auto;
@@ -479,6 +529,76 @@ pre {
   }
   .chat-resize-handle { display: none !important; }
 }
+/* ──────────────────────────────────────────────────────────────────────────
+ * Modal dialog (reusable — confirm, forms, etc.)
+ * ────────────────────────────────────────────────────────────────────────── */
+.modal-root {
+  position: fixed; inset: 0; z-index: 100;
+  display: grid; place-items: center;
+}
+.modal-backdrop {
+  position: absolute; inset: 0;
+  background: rgba(9, 59, 95, 0.45);
+}
+.modal-card {
+  position: relative;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: var(--shadow);
+  width: min(560px, 92vw);
+  max-height: 88vh; overflow-y: auto;
+  padding: 24px 28px;
+}
+.modal-card h2 { color: var(--primary); margin-bottom: 12px; font-size: 18px; }
+.modal-card .modal-body { color: var(--text); font-size: 14px; line-height: 1.5; }
+.modal-card .modal-body p { margin: 8px 0; }
+.modal-card .modal-field { display: block; margin: 14px 0; }
+.modal-card .modal-field label {
+  display: block; font-family: 'Space Mono', monospace; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 1px; color: var(--muted);
+  font-weight: 700; margin-bottom: 4px;
+}
+.modal-card .modal-field input, .modal-card .modal-field textarea {
+  width: 100%; padding: 8px 12px; font-family: 'Figtree', sans-serif; font-size: 14px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--text);
+}
+.modal-card .modal-field input:focus, .modal-card .modal-field textarea:focus {
+  outline: none; border-color: var(--accent);
+}
+.modal-card .modal-actions {
+  display: flex; justify-content: flex-end; gap: 8px;
+  margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border);
+}
+.modal-card .modal-btn {
+  padding: 8px 16px; border-radius: 6px; cursor: pointer; font-weight: 600;
+  font-family: 'Figtree', sans-serif; font-size: 14px;
+}
+.modal-card .modal-btn-primary { background: var(--primary); color: white; border: none; }
+.modal-card .modal-btn-primary:hover { background: var(--accent); color: var(--primary); }
+.modal-card .modal-btn-secondary {
+  background: transparent; color: var(--muted); border: 1px solid var(--border);
+}
+.modal-card .modal-btn-secondary:hover { color: var(--primary); border-color: var(--primary); }
+.modal-card .modal-error { color: #b00020; font-size: 13px; margin-top: 8px; }
+.modal-card .modal-success { color: #00866a; font-size: 13px; margin-top: 8px; }
+
+/* Settings page */
+.settings-page { max-width: 640px; }
+.settings-page h1 { color: var(--primary); margin-bottom: 16px; }
+.settings-section {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  padding: 20px 24px; margin: 16px 0;
+}
+.settings-section h2 { font-size: 16px; color: var(--primary); margin-bottom: 12px; }
+.settings-flag-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 0; font-size: 14px;
+}
+.settings-flag-row .flag-name { font-family: 'Space Mono', monospace; color: var(--muted); font-size: 12px; }
+.settings-flag-row .flag-value { font-weight: 600; }
+.settings-flag-row .flag-value.on { color: #00866a; }
+.settings-flag-row .flag-value.off { color: var(--muted); }
+
 @media (max-width: 768px) {
   /* Open sidebar becomes a slide-over with backdrop; collapsed stays as in-flow rail */
   body[data-sidebar="open"] .app-layout { grid-template-columns: 0 1fr 0 0; }

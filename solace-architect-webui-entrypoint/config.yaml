@@ -38,8 +38,10 @@ apps:
       default_agent_name: SAOrchestratorAgent
 
       # WebUI-specific adapter config (consumed by SolaceArchitectWebuiComponent)
+      # Port defaults to 9080 — SAM's stock webui gateway already binds 8080, so
+      # using 8080 collides whenever both run in the same project.
       adapter_config:
-        port: ${WEBUI_PORT, 8080}
+        port: ${WEBUI_PORT, 9080}
         host: ${WEBUI_HOST, 0.0.0.0}
         show_status_updates: true
         # Path to branding overrides (relative to working dir).

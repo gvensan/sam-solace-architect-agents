@@ -166,6 +166,7 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                 # for /, /projects/{id}/{view}, /intake/new, /intake/edit/{id}, etc.
                 self._app.router.add_get("/", self._serve_index)
                 self._app.router.add_get("/projects/{tail:.*}", self._serve_index)
+                self._app.router.add_get("/settings", self._serve_index)
                 self._app.router.add_get("/intake", self._serve_intake_form)
                 self._app.router.add_get("/intake/{tail:.*}", self._serve_intake_form)
                 self._app.router.add_static("/assets/", static_dir / "assets", show_index=False)
@@ -173,6 +174,9 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                 self._app.router.add_get("/api/chat/stream/{session_id}", self._sse_chat_stream)
                 self._app.router.add_post("/api/chat/message", self._chat_message)
                 self._app.router.add_get("/api/agents", self._agents_list)
+                # Health probes (unauthenticated)
+                self._app.router.add_get("/health",  self._health)
+                self._app.router.add_get("/ready",   self._ready)
                 # Declarative JSON API routes
                 for method, path, handler in API_ROUTES:
                     self._app.router.add_route(method, path, self._adapt_api_handler(handler))
@@ -343,6 +347,24 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         await self.process_external_event(body)
         return web.json_response({"session_id": session_id, "accepted": True},
                                  headers={"Cache-Control": "no-store"})
+
+    async def _health(self, request: web.Request) -> web.Response:
+        """Liveness probe — always 200 once the HTTP server is up."""
+        return web.json_response({"status": "ok"}, headers={"Cache-Control": "no-store"})
+
+    async def _ready(self, request: web.Request) -> web.Response:
+        """Readiness probe — 200 only when the gateway has finished initializing."""
+        ready = bool(self._http_ready and self._http_ready.is_set())
+        agents = 0
+        try:
+            agents = len(self.agent_registry.get_agent_names() or [])
+        except Exception:
+            pass
+        return web.json_response(
+            {"status": "ready" if ready else "not_ready", "discovered_agents": agents},
+            status=200 if ready else 503,
+            headers={"Cache-Control": "no-store"},
+        )
 
     async def _agents_list(self, request: web.Request) -> web.Response:
         """List agents currently discovered on the SAM mesh (for the chat picker)."""

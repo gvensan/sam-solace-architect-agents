@@ -143,21 +143,29 @@
   // ============================================================================
   // Current user — populate header chip + redirect to /login if anon and required
   // ============================================================================
+  let currentUser = null;
   async function loadCurrentUser() {
     try {
       const r = await fetch("/api/auth/me");
       const d = await r.json();
       const chip = document.getElementById("user-chip");
+      const logoutBtn = document.getElementById("logout-btn");
+      const settingsLink = document.getElementById("settings-link");
       if (d.authenticated) {
         chip.textContent = d.user.name + (d.user.is_admin ? " (admin)" : "");
         chip.title = d.user.email || "";
         chip.classList.add("authenticated");
+        logoutBtn?.classList.remove("hidden");
+        settingsLink?.classList.remove("hidden");
       } else if (d.require_auth) {
         window.location.href = "/login";
         return null;
       } else {
         chip.textContent = "anonymous (dev)";
+        logoutBtn?.classList.add("hidden");
+        settingsLink?.classList.remove("hidden");
       }
+      currentUser = d;
       return d;
     } catch (e) {
       console.error("Failed to load /api/auth/me", e);
@@ -165,10 +173,16 @@
     }
   }
 
+  // Logout button — calls window.__logout (defined later) on click
+  document.getElementById("logout-btn")?.addEventListener("click", async () => {
+    if (window.__logout) await window.__logout();
+  });
+
   // ============================================================================
   // Project list
   // ============================================================================
   let projects = [];
+  let projectSearchTerm = "";
   async function loadProjects() {
     const r = await fetch("/api/projects");
     projects = await r.json();
@@ -176,18 +190,46 @@
   }
   function renderSidebarProjects() {
     const list = document.getElementById("project-list");
+    const filter = projectSearchTerm.trim().toLowerCase();
+    const filtered = filter
+      ? projects.filter(p => (p.name || "").toLowerCase().includes(filter))
+      : projects;
     if (!projects.length) {
       list.innerHTML = '<div class="empty-hint">No projects yet.</div>';
+    } else if (!filtered.length) {
+      list.innerHTML = '<div class="empty-hint">No projects match.</div>';
     } else {
       const active = currentProjectId();
-      list.innerHTML = projects.map(p =>
-        `<a href="/projects/${encodeURIComponent(p.id)}/overview"
-            class="project-link${p.id === active ? " active" : ""}"
-            data-route>${escapeHtml(p.name)}</a>`
+      list.innerHTML = filtered.map(p =>
+        `<div class="project-link-row">
+           <a href="/projects/${encodeURIComponent(p.id)}/overview"
+              class="project-link${p.id === active ? " active" : ""}"
+              data-route>${escapeHtml(p.name)}</a>
+           <button class="project-action-btn" title="Project actions"
+                   data-project-actions="${escapeHtml(p.id)}" aria-label="Project actions">⋯</button>
+         </div>`
       ).join("");
     }
     renderSidebarRail();
   }
+
+  // Wire sidebar search filter
+  document.getElementById("project-search")?.addEventListener("input", (e) => {
+    projectSearchTerm = e.target.value || "";
+    renderSidebarProjects();
+  });
+
+  // Delegated handler for the kebab menu (rename / clone / archive)
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-project-actions]");
+    if (!btn) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const pid = btn.getAttribute("data-project-actions");
+    const proj = projects.find(p => p.id === pid);
+    if (!proj) return;
+    openProjectActionsModal(proj);
+  });
 
   function renderSidebarRail() {
     const railProj = document.getElementById("rail-active-project");
@@ -208,7 +250,7 @@
   // Router — pushState for SPA paths only; /intake/* falls through to browser
   // ============================================================================
   function isSpaPath(href) {
-    return href === "/" || href.startsWith("/projects/");
+    return href === "/" || href.startsWith("/projects/") || href === "/settings";
   }
   function navigate(path, push = true) {
     if (push) window.history.pushState({}, "", path);
@@ -271,6 +313,7 @@
       : `Message ${agentName}…`;
 
     if (path === "/" || path === "") return renderHome(content);
+    if (path === "/settings") return renderSettingsView(content);
 
     if (eid) {
       const view = currentView();
@@ -405,8 +448,18 @@
       root.innerHTML = `<h1>Open Items</h1>` +
         (items.length === 0 ? "<p>No open items.</p>" :
           `<table><thead><tr><th>ID</th><th>Severity</th><th>Source</th><th>Description</th><th></th></tr></thead><tbody>` +
-          items.map(q => `<tr><td>${escapeHtml(q.id)}</td><td>${escapeHtml(q.severity)}</td><td>${escapeHtml(q.source)}</td><td>${escapeHtml(q.description)}</td><td><button class="copy-btn" onclick="window.__resolveItem('${eid}','${q.id}')">Resolve</button></td></tr>`).join("") +
+          items.map(q => `<tr>
+            <td>${escapeHtml(q.id)}</td>
+            <td>${escapeHtml(q.severity)}</td>
+            <td>${escapeHtml(q.source)}</td>
+            <td>${escapeHtml(q.description)}</td>
+            <td><button class="copy-btn" data-resolve-item="${escapeHtml(q.id)}" data-desc="${escapeHtml(q.description || "")}">Resolve</button></td>
+          </tr>`).join("") +
           `</tbody></table>`);
+      root.querySelectorAll("[data-resolve-item]").forEach(btn => {
+        btn.addEventListener("click", () =>
+          openResolveItemModal(eid, btn.dataset.resolveItem, btn.dataset.desc));
+      });
     },
 
     artifacts: async (root, eid) => {
@@ -447,6 +500,251 @@
   };
 
   // ============================================================================
+  // Modal helpers — single shared #modal-root, used for confirm/forms/etc.
+  // ============================================================================
+  const modalRoot = document.getElementById("modal-root");
+  const modalCard = document.getElementById("modal-card");
+
+  function openModal(innerHtml, opts = {}) {
+    modalCard.innerHTML = innerHtml;
+    modalRoot.classList.remove("hidden");
+    modalRoot.setAttribute("aria-hidden", "false");
+    if (opts.focus) {
+      const target = modalCard.querySelector(opts.focus);
+      target?.focus();
+    }
+  }
+  function closeModal() {
+    modalRoot.classList.add("hidden");
+    modalRoot.setAttribute("aria-hidden", "true");
+    modalCard.innerHTML = "";
+  }
+  modalRoot.addEventListener("click", (e) => {
+    if (e.target.closest("[data-modal-close]")) closeModal();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !modalRoot.classList.contains("hidden")) closeModal();
+  });
+
+  function openProjectActionsModal(project) {
+    openModal(`
+      <h2>Project: ${escapeHtml(project.name)}</h2>
+      <div class="modal-body">
+        <div class="modal-field">
+          <label for="proj-rename-name">Rename</label>
+          <input id="proj-rename-name" type="text" value="${escapeHtml(project.name)}">
+        </div>
+        <div class="modal-field">
+          <label for="proj-rename-desc">Description (optional)</label>
+          <textarea id="proj-rename-desc" rows="2">${escapeHtml(project.description || "")}</textarea>
+        </div>
+        <div id="proj-action-msg"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn modal-btn-secondary" data-action="clone">Clone…</button>
+        <button class="modal-btn modal-btn-secondary" data-action="archive">${project.status === "archived" ? "(archived)" : "Archive"}</button>
+        <button class="modal-btn modal-btn-secondary" data-modal-close>Cancel</button>
+        <button class="modal-btn modal-btn-primary" data-action="rename">Save</button>
+      </div>
+    `, { focus: "#proj-rename-name" });
+
+    modalCard.querySelector('[data-action="rename"]').addEventListener("click", async () => {
+      const name = modalCard.querySelector("#proj-rename-name").value.trim();
+      const description = modalCard.querySelector("#proj-rename-desc").value.trim();
+      const msg = modalCard.querySelector("#proj-action-msg");
+      if (!name) { msg.innerHTML = `<div class="modal-error">Name is required.</div>`; return; }
+      try {
+        const r = await fetch(`/api/projects/${encodeURIComponent(project.id)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, description }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        await loadProjects();
+        closeModal();
+      } catch (err) {
+        msg.innerHTML = `<div class="modal-error">${escapeHtml(String(err.message || err))}</div>`;
+      }
+    });
+
+    modalCard.querySelector('[data-action="clone"]').addEventListener("click", () => {
+      openCloneProjectModal(project);
+    });
+
+    modalCard.querySelector('[data-action="archive"]').addEventListener("click", async () => {
+      if (project.status === "archived") return;
+      if (!confirm(`Archive "${project.name}"? You can still view it but no new activity will run.`)) return;
+      try {
+        const r = await fetch(`/api/projects/${encodeURIComponent(project.id)}/archive`, { method: "POST" });
+        if (!r.ok) throw new Error(await r.text());
+        await loadProjects();
+        closeModal();
+        if (currentProjectId() === project.id) navigate("/");
+      } catch (err) {
+        modalCard.querySelector("#proj-action-msg").innerHTML =
+          `<div class="modal-error">${escapeHtml(String(err.message || err))}</div>`;
+      }
+    });
+  }
+
+  function openCloneProjectModal(source) {
+    openModal(`
+      <h2>Clone "${escapeHtml(source.name)}"</h2>
+      <div class="modal-body">
+        <p class="muted">A new project is seeded with the source's intake/brief. Decisions and artifacts don't carry over.</p>
+        <div class="modal-field">
+          <label for="proj-clone-name">New project name</label>
+          <input id="proj-clone-name" type="text" value="${escapeHtml(source.name + " (copy)")}">
+        </div>
+        <div id="proj-clone-msg"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn modal-btn-secondary" data-modal-close>Cancel</button>
+        <button class="modal-btn modal-btn-primary" data-action="clone-go">Clone</button>
+      </div>
+    `, { focus: "#proj-clone-name" });
+
+    modalCard.querySelector('[data-action="clone-go"]').addEventListener("click", async () => {
+      const new_name = modalCard.querySelector("#proj-clone-name").value.trim();
+      const msg = modalCard.querySelector("#proj-clone-msg");
+      if (!new_name) { msg.innerHTML = `<div class="modal-error">Name is required.</div>`; return; }
+      try {
+        const r = await fetch(`/api/projects/${encodeURIComponent(source.id)}/clone`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ new_name }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        const created = await r.json();
+        await loadProjects();
+        closeModal();
+        if (created?.id) navigate(`/projects/${encodeURIComponent(created.id)}/overview`);
+      } catch (err) {
+        msg.innerHTML = `<div class="modal-error">${escapeHtml(String(err.message || err))}</div>`;
+      }
+    });
+  }
+
+  function openResolveItemModal(eid, itemId, description) {
+    openModal(`
+      <h2>Resolve open item</h2>
+      <div class="modal-body">
+        <p class="muted">${escapeHtml(description || itemId)}</p>
+        <div class="modal-field">
+          <label for="resolve-note">Resolution note</label>
+          <textarea id="resolve-note" rows="3" placeholder="What's the resolution?"></textarea>
+        </div>
+        <div id="resolve-msg"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn modal-btn-secondary" data-modal-close>Cancel</button>
+        <button class="modal-btn modal-btn-primary" data-action="resolve-go">Resolve</button>
+      </div>
+    `, { focus: "#resolve-note" });
+
+    modalCard.querySelector('[data-action="resolve-go"]').addEventListener("click", async () => {
+      const note = modalCard.querySelector("#resolve-note").value.trim();
+      try {
+        const r = await fetch(`/api/engagements/${encodeURIComponent(eid)}/open-items/${encodeURIComponent(itemId)}/resolve`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ resolution_note: note }),
+        });
+        if (!r.ok) throw new Error(await r.text());
+        closeModal();
+        render();
+      } catch (err) {
+        modalCard.querySelector("#resolve-msg").innerHTML =
+          `<div class="modal-error">${escapeHtml(String(err.message || err))}</div>`;
+      }
+    });
+  }
+
+  // ============================================================================
+  // Settings page (SPA route /settings)
+  // ============================================================================
+  async function renderSettingsView(root) {
+    const me = currentUser?.user || null;
+    const flags = currentUser || {};
+    root.innerHTML = `
+      <div class="settings-page">
+        <h1>Settings</h1>
+
+        <section class="settings-section">
+          <h2>Account</h2>
+          ${me ? `
+            <div class="settings-flag-row"><span class="flag-name">Username</span><span class="flag-value">${escapeHtml(me.username || me.name)}</span></div>
+            <div class="settings-flag-row"><span class="flag-name">Email</span><span class="flag-value">${escapeHtml(me.email || "—")}</span></div>
+            <div class="settings-flag-row"><span class="flag-name">Role</span><span class="flag-value">${me.is_admin ? "admin" : "user"}</span></div>
+            <p style="margin-top:14px"><button id="open-pw-change" class="modal-btn modal-btn-primary">Change password…</button></p>
+          ` : `<p class="muted">Not signed in.</p>`}
+        </section>
+
+        <section class="settings-section">
+          <h2>Server flags</h2>
+          <p class="muted" style="font-size:12px;margin-bottom:8px">Read-only — controlled by environment variables on the server.</p>
+          <div class="settings-flag-row">
+            <span class="flag-name">WEBUI_REQUIRE_AUTH</span>
+            <span class="flag-value ${flags.require_auth ? "on" : "off"}">${flags.require_auth ? "true" : "false"}</span>
+          </div>
+          <div class="settings-flag-row">
+            <span class="flag-name">WEBUI_ENABLE_SIGNUP</span>
+            <span class="flag-value ${flags.enable_signup ? "on" : "off"}">${flags.enable_signup ? "true" : "false"}</span>
+          </div>
+        </section>
+      </div>
+    `;
+    root.querySelector("#open-pw-change")?.addEventListener("click", openPasswordChangeModal);
+  }
+
+  function openPasswordChangeModal() {
+    openModal(`
+      <h2>Change password</h2>
+      <div class="modal-body">
+        <div class="modal-field">
+          <label for="pw-old">Current password</label>
+          <input id="pw-old" type="password" autocomplete="current-password">
+        </div>
+        <div class="modal-field">
+          <label for="pw-new">New password</label>
+          <input id="pw-new" type="password" autocomplete="new-password">
+        </div>
+        <div class="modal-field">
+          <label for="pw-new2">Confirm new password</label>
+          <input id="pw-new2" type="password" autocomplete="new-password">
+        </div>
+        <div id="pw-msg"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-btn modal-btn-secondary" data-modal-close>Cancel</button>
+        <button class="modal-btn modal-btn-primary" data-action="pw-go">Change password</button>
+      </div>
+    `, { focus: "#pw-old" });
+
+    modalCard.querySelector('[data-action="pw-go"]').addEventListener("click", async () => {
+      const old_password = modalCard.querySelector("#pw-old").value;
+      const new_password = modalCard.querySelector("#pw-new").value;
+      const confirm_pw = modalCard.querySelector("#pw-new2").value;
+      const msg = modalCard.querySelector("#pw-msg");
+      if (!old_password || !new_password) { msg.innerHTML = `<div class="modal-error">Both fields required.</div>`; return; }
+      if (new_password !== confirm_pw) { msg.innerHTML = `<div class="modal-error">New passwords don't match.</div>`; return; }
+      try {
+        const r = await fetch("/api/auth/change-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ old_password, new_password }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+        msg.innerHTML = `<div class="modal-success">Password updated — signing you out.</div>`;
+        setTimeout(() => window.location.href = d.redirect || "/login", 800);
+      } catch (err) {
+        msg.innerHTML = `<div class="modal-error">${escapeHtml(String(err.message || err))}</div>`;
+      }
+    });
+  }
+
+  // ============================================================================
   // Chat panel — wired to /api/chat/{message,stream/{session_id}}
   // ============================================================================
   let chatSessionId = null;
@@ -455,7 +753,29 @@
   const chatForm = document.getElementById("chat-form");
   const chatInput = document.getElementById("chat-input");
 
-  function appendChatMessage(role, text) {
+  // Chat history is persisted per session_id in localStorage so a refresh
+  // doesn't lose the visible conversation. Server-side persistence is not
+  // wired in Phase 1 — agents keep their own session state via SAM.
+  const CHAT_HISTORY_KEY = (sid) => `solace-architect-chat-log:${sid}`;
+  function loadChatHistory(sid) {
+    try { return JSON.parse(localStorage.getItem(CHAT_HISTORY_KEY(sid)) || "[]"); }
+    catch { return []; }
+  }
+  function saveChatHistory(sid, messages) {
+    try { localStorage.setItem(CHAT_HISTORY_KEY(sid), JSON.stringify(messages.slice(-500))); }
+    catch { /* quota / private mode — silently skip */ }
+  }
+  function clearChatHistory(sid) {
+    try { localStorage.removeItem(CHAT_HISTORY_KEY(sid)); } catch { /* ignore */ }
+  }
+  // Track the most recent session id across reloads
+  function getLastSessionId() { return localStorage.getItem("solace-architect-chat-session") || null; }
+  function setLastSessionId(sid) {
+    if (sid) localStorage.setItem("solace-architect-chat-session", sid);
+    else localStorage.removeItem("solace-architect-chat-session");
+  }
+
+  function appendChatMessage(role, text, opts = {}) {
     const empty = chatLog.querySelector(".chat-empty");
     if (empty) empty.remove();
     const div = document.createElement("div");
@@ -463,7 +783,71 @@
     div.textContent = text;
     chatLog.appendChild(div);
     chatLog.scrollTop = chatLog.scrollHeight;
+    if (!opts.skipPersist && chatSessionId) {
+      const log = loadChatHistory(chatSessionId);
+      log.push({ role, text, ts: Date.now() });
+      saveChatHistory(chatSessionId, log);
+    }
   }
+
+  function rehydrateChatFromHistory(sid) {
+    const log = loadChatHistory(sid);
+    if (!log.length) return;
+    chatLog.querySelector(".chat-empty")?.remove();
+    log.forEach(m => appendChatMessage(m.role, m.text, { skipPersist: true }));
+  }
+
+  function resetChat() {
+    if (chatEventSource) { chatEventSource.close(); chatEventSource = null; }
+    if (chatSessionId) clearChatHistory(chatSessionId);
+    chatSessionId = null;
+    setLastSessionId(null);
+    chatLog.innerHTML = `
+      <div class="chat-empty">
+        <p>Conversational interaction with any agent on the SAM mesh.</p>
+        <p class="muted">Pick an agent below and type a message to start.</p>
+      </div>`;
+    chatAttachments = [];
+    renderAttachList();
+  }
+  document.getElementById("chat-new")?.addEventListener("click", resetChat);
+
+  // ---------- chat file attachments ----------
+  let chatAttachments = [];     // [{name, mime_type, bytes:base64}]
+  const attachInput = document.getElementById("chat-attach-input");
+  const attachList = document.getElementById("chat-attach-list");
+
+  function renderAttachList() {
+    if (!attachList) return;
+    if (!chatAttachments.length) { attachList.innerHTML = ""; return; }
+    attachList.innerHTML = chatAttachments.map((f, i) =>
+      `<span class="chat-attach-chip">
+         <span class="chat-attach-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
+         <button type="button" data-attach-remove="${i}" aria-label="Remove">×</button>
+       </span>`
+    ).join("");
+  }
+  attachList?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-attach-remove]");
+    if (!btn) return;
+    const idx = parseInt(btn.getAttribute("data-attach-remove"), 10);
+    chatAttachments.splice(idx, 1);
+    renderAttachList();
+  });
+  attachInput?.addEventListener("change", async () => {
+    const files = Array.from(attachInput.files || []);
+    for (const f of files) {
+      try {
+        const buf = await f.arrayBuffer();
+        const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
+        chatAttachments.push({ name: f.name, mime_type: f.type || "application/octet-stream", bytes: b64 });
+      } catch (err) {
+        console.error("Failed to read attachment", f.name, err);
+      }
+    }
+    attachInput.value = "";
+    renderAttachList();
+  });
 
   function openSseStream(sessionId) {
     if (chatEventSource) chatEventSource.close();
@@ -515,17 +899,23 @@
     const eid = currentProjectId();
     const agent = chatAgentSelect?.value || "";
 
-    appendChatMessage("user", text);
-    chatInput.value = "";
-
     if (!chatSessionId) {
       chatSessionId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
+      setLastSessionId(chatSessionId);
       openSseStream(chatSessionId);
     }
+
+    appendChatMessage("user", text);
+    chatInput.value = "";
 
     const body = { text, session_id: chatSessionId };
     if (agent) body.agent = agent;
     if (eid) body.engagement_id = eid;
+    if (chatAttachments.length) {
+      body.files = chatAttachments.slice();
+      chatAttachments = [];
+      renderAttachList();
+    }
 
     try {
       await fetch("/api/chat/message", {
@@ -541,14 +931,7 @@
   // ============================================================================
   // Action handlers (inline onclick)
   // ============================================================================
-  window.__resolveItem = async (eid, itemId) => {
-    const note = prompt("Resolution note?") || "";
-    await fetch(`/api/engagements/${encodeURIComponent(eid)}/open-items/${encodeURIComponent(itemId)}/resolve`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ resolution_note: note }),
-    });
-    render();
-  };
+  window.__resolveItem = (eid, itemId, desc) => openResolveItemModal(eid, itemId, desc || "");
   window.__renderPack = async (eid, audience) => {
     const r = await fetch(`/api/engagements/${encodeURIComponent(eid)}/exports/render`, {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -876,6 +1259,13 @@
     const me = await loadCurrentUser();
     if (me === null) return;        // redirected to /login
     await Promise.all([loadProjects(), loadAgents()]);
+    // Restore the previous chat session (if any) so refresh doesn't lose state.
+    const prevSid = getLastSessionId();
+    if (prevSid) {
+      chatSessionId = prevSid;
+      rehydrateChatFromHistory(prevSid);
+      openSseStream(prevSid);
+    }
     await render();
   })();
 })();

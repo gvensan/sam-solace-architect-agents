@@ -36,6 +36,7 @@ _PUBLIC_PREFIXES = (
     "/api/auth/login", "/api/auth/signup", "/api/auth/me",   # /me returns 200 anon / 200 user
     "/assets/",
     "/favicon",
+    "/health", "/ready",                                      # probes — no auth
 )
 
 
