@@ -318,6 +318,17 @@ apps:
         deny_list: []
         request_timeout_seconds: 60
 
+      # Force SAM to import the plugin's package so __init__.py runs and
+      # attach_plugin_file_handler() activates per-plugin log writing.
+      # The lifecycle.init function is also a natural hook for any future
+      # one-shot bootstrap work (warming caches, validating grounding, etc.).
+      agent_init_function:
+        module: solace_architect_discovery.lifecycle
+        name: init
+      agent_cleanup_function:
+        module: solace_architect_discovery.lifecycle
+        name: cleanup
+
       agent_card:
         description: >
           Refines a partially-filled intake into a complete Solace discovery
