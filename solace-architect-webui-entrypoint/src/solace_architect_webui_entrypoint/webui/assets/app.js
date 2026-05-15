@@ -1141,6 +1141,9 @@
 
   async function loadAgents() {
     if (!chatAgentSelect) return;
+    // Preserve whatever the user picked so the 15s re-poll doesn't snap the
+    // selection back to the configured default.
+    const previousChoice = chatAgentSelect.value || "";
     try {
       const r = await fetch("/api/agents");
       const d = await r.json();
@@ -1150,10 +1153,16 @@
         chatAgentSelect.innerHTML = `<option value="">${escapeHtml(defaultName || "(no agents discovered)")}</option>`;
         return;
       }
+      const names = new Set(agents.map(a => a.name));
+      // Resolve which agent should end up selected: user's prior pick wins if
+      // still on the mesh; otherwise fall back to the configured default.
+      const desired = (previousChoice && names.has(previousChoice))
+        ? previousChoice
+        : defaultName;
       chatAgentSelect.innerHTML = agents.map(a =>
-        `<option value="${escapeHtml(a.name)}"${a.default ? " selected" : ""}>${escapeHtml(a.name)}</option>`
+        `<option value="${escapeHtml(a.name)}"${a.name === desired ? " selected" : ""}>${escapeHtml(a.name)}</option>`
       ).join("");
-      if (!chatAgentSelect.value && defaultName) chatAgentSelect.value = defaultName;
+      if (desired) chatAgentSelect.value = desired;
     } catch (err) {
       chatAgentSelect.innerHTML = `<option value="">(agent discovery failed)</option>`;
     }
