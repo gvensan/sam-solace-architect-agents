@@ -121,6 +121,20 @@ body[data-sidebar="closed"][data-chat="open"] .app-layout {
   overflow-x: hidden;
   transition: width 0.2s ease;
 }
+/* Sidebar-full lays out as a column so the footer can sit at the bottom */
+.sidebar-full {
+  display: flex; flex-direction: column;
+  min-height: 100%;
+}
+.sidebar-spacer { flex: 1; }
+.sidebar-footer {
+  padding: 8px 20px 12px;
+  border-top: 1px solid var(--border);
+  font-family: 'Space Mono', monospace; font-size: 11px;
+  color: var(--muted);
+}
+/* When collapsed: no footer in the rail */
+body[data-sidebar="closed"] .sidebar-footer { display: none; }
 body[data-sidebar="closed"] .sidebar { padding: 12px 0; }
 body[data-sidebar="closed"] .sidebar-full { display: none; }
 body[data-sidebar="open"] .sidebar-rail { display: none; }
@@ -326,14 +340,21 @@ body[data-chat="closed"] .chat-panel { display: none; }
   border-top: 1px solid var(--border);
   background: var(--bg);
 }
-.chat-form input {
+.chat-form input, .chat-form textarea {
   width: 100%; padding: 8px 12px;
   border: 1px solid var(--border); border-radius: 6px;
   background: var(--bg); color: var(--text);
   font-family: 'Figtree', sans-serif; font-size: 14px;
 }
-.chat-form input:focus { outline: none; border-color: var(--accent); }
-.chat-form input:disabled { background: var(--surface); color: var(--muted); cursor: not-allowed; }
+.chat-form textarea {
+  min-height: 88px;          /* ~4 lines at the current line-height */
+  max-height: 240px;
+  resize: vertical;
+  overflow-y: auto;
+  line-height: 1.4;
+}
+.chat-form input:focus, .chat-form textarea:focus { outline: none; border-color: var(--accent); }
+.chat-form input:disabled, .chat-form textarea:disabled { background: var(--surface); color: var(--muted); cursor: not-allowed; }
 
 .chat-form-controls {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
@@ -581,6 +602,23 @@ pre {
 .modal-card .modal-btn-secondary:hover { color: var(--primary); border-color: var(--primary); }
 .modal-card .modal-error { color: #b00020; font-size: 13px; margin-top: 8px; }
 .modal-card .modal-success { color: #00866a; font-size: 13px; margin-top: 8px; }
+
+/* Discovery CTA banner — shown on Overview when intake exists but Discovery
+ * hasn't run yet. One-click opens chat with SADiscoveryAgent and a primed
+ * prompt. Drops once Discovery writes discovery/discovery-summary.md. */
+.discovery-cta {
+  display: flex; align-items: center; justify-content: space-between; gap: 24px;
+  margin: 16px 0 20px; padding: 18px 22px;
+  background: linear-gradient(135deg, rgba(0,200,149,0.08), rgba(9,59,95,0.04));
+  border: 1px solid var(--accent); border-radius: 10px;
+}
+.discovery-cta-body { flex: 1; min-width: 0; }
+.discovery-cta-eyebrow { font-family: 'Space Mono', monospace; font-size: 11px;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent); }
+.discovery-cta h2 { margin: 4px 0 6px; color: var(--primary); font-size: 18px; }
+.discovery-cta p { color: var(--muted); font-size: 13px; line-height: 1.5; max-width: 70ch; }
+.discovery-cta-actions { flex-shrink: 0; }
+.discovery-cta-actions .cta-btn { font-size: 14px; padding: 8px 14px; cursor: pointer; }
 
 /* Settings page (two-pane: inner sidebar + content) */
 .settings-page { display: grid; grid-template-columns: 220px 1fr; gap: 24px; align-items: start; }

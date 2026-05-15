@@ -14,8 +14,13 @@ from typing import Any, Dict, List
 
 from solace_agent_mesh.gateway.base.app import BaseGatewayApp
 from solace_agent_mesh.gateway.base.component import BaseGatewayComponent
+from solace_architect_core.logging_setup import attach_plugin_file_handler
 
 from solace_architect_webui_entrypoint.component import SolaceArchitectWebuiComponent
+
+# Opt-in per-plugin log file (writes ${SA_LOG_DIR}/solace_architect_webui_entrypoint.log
+# when SA_LOG_DIR is set; otherwise no-op so other deployments are unaffected).
+attach_plugin_file_handler("solace_architect_webui_entrypoint")
 
 log = logging.getLogger(__name__)
 

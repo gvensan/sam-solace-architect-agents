@@ -312,6 +312,9 @@
       ? `Message ${agentName} about ${eid}…`
       : `Message ${agentName}…`;
 
+    // Re-anchor the chat session to the current project context.
+    if (typeof syncChatProjectContext === "function") syncChatProjectContext();
+
     if (path === "/" || path === "") return renderHome(content);
     if (path === "/settings") return renderSettingsView(content);
 
@@ -365,15 +368,22 @@
   const VIEWS = {
     overview: async (root, eid) => {
       try {
-        const [stats, intakeRes] = await Promise.all([
+        const [stats, intakeRes, artifacts] = await Promise.all([
           fetch(`/api/engagements/${encodeURIComponent(eid)}/overview`).then(r => r.json()),
           fetch(`/api/intake/load/${encodeURIComponent(eid)}`).then(r => r.json()),
+          fetch(`/api/engagements/${encodeURIComponent(eid)}/artifacts`).then(r => r.json()).catch(() => []),
         ]);
         const intake = (intakeRes && intakeRes.intake) || {};
         const activeProject = projects.find(p => p.id === eid);
         const statusValue = activeProject?.status || "active";
+        const hasIntake = artifacts.some(a => a === "discovery/intake.json");
+        const hasDiscovery = artifacts.some(a => a === "discovery/discovery-summary.md");
+        const discoveryCta = (hasIntake && !hasDiscovery)
+          ? renderDiscoveryCta(eid)
+          : "";
         root.innerHTML = `
           <h1>Overview</h1>
+          ${discoveryCta}
 
           <!-- Compact engagement-state tiles. Status is the first tile (Overview only);
                Activities lives on Decisions. -->
@@ -381,6 +391,14 @@
 
           ${renderIntakeBrief(intake)}
         `;
+        root.querySelector("#start-discovery-btn")?.addEventListener("click", () => {
+          applyChat("open");
+          const ci = document.getElementById("chat-input");
+          if (ci) {
+            ci.value = "Let's start discovery — please review the intake and ask your first follow-up.";
+            ci.focus();
+          }
+        });
       } catch (e) {
         root.innerHTML = `<div class="welcome"><h1>Overview unavailable</h1><p>${escapeHtml(e.message || e)}</p></div>`;
       }
@@ -498,6 +516,25 @@
         <button class="copy-btn" onclick="window.__downloadZip('${eid}')">Download zip</button>`;
     },
   };
+
+  // Discovery CTA shown on Overview when intake.json exists but Discovery
+  // hasn't produced its summary yet. One-click opens chat with a primed
+  // message — the agent then reads intake.json and asks its first follow-up.
+  function renderDiscoveryCta(eid) {
+    return `
+      <div class="discovery-cta" role="region" aria-label="Discovery not yet run">
+        <div class="discovery-cta-body">
+          <div class="discovery-cta-eyebrow">Next step</div>
+          <h2>Discovery hasn't run yet</h2>
+          <p>This project has an intake form on file but Discovery hasn't produced an
+          enriched brief. Open chat and SADiscoveryAgent will read your intake, pattern-match
+          against the reference architectures, and ask only about the gaps.</p>
+        </div>
+        <div class="discovery-cta-actions">
+          <button id="start-discovery-btn" class="cta-btn">Start Discovery →</button>
+        </div>
+      </div>`;
+  }
 
   // ============================================================================
   // Modal helpers — single shared #modal-root, used for confirm/forms/etc.
@@ -930,10 +967,16 @@
   const chatForm = document.getElementById("chat-form");
   const chatInput = document.getElementById("chat-input");
 
-  // Chat history is persisted per session_id in localStorage so a refresh
-  // doesn't lose the visible conversation. Server-side persistence is not
-  // wired in Phase 1 — agents keep their own session state via SAM.
+  // Chat history is persisted per project in localStorage. The session id is
+  // derived deterministically from the active project — `chat-<engagement_id>`
+  // for a project context, `chat-global` when no project is active. Each
+  // project's log lives at `solace-architect-chat-log:chat-<eid>`; loading is
+  // explicit (user clicks "Load history") so visiting a project doesn't dump
+  // stale conversation in the user's face.
   const CHAT_HISTORY_KEY = (sid) => `solace-architect-chat-log:${sid}`;
+  function deriveChatSessionId() {
+    return "chat-" + (currentProjectId() || "global");
+  }
   function loadChatHistory(sid) {
     try { return JSON.parse(localStorage.getItem(CHAT_HISTORY_KEY(sid)) || "[]"); }
     catch { return []; }
@@ -942,14 +985,8 @@
     try { localStorage.setItem(CHAT_HISTORY_KEY(sid), JSON.stringify(messages.slice(-500))); }
     catch { /* quota / private mode — silently skip */ }
   }
-  function clearChatHistory(sid) {
-    try { localStorage.removeItem(CHAT_HISTORY_KEY(sid)); } catch { /* ignore */ }
-  }
-  // Track the most recent session id across reloads
-  function getLastSessionId() { return localStorage.getItem("solace-architect-chat-session") || null; }
-  function setLastSessionId(sid) {
-    if (sid) localStorage.setItem("solace-architect-chat-session", sid);
-    else localStorage.removeItem("solace-architect-chat-session");
+  function hasChatHistory(sid) {
+    return loadChatHistory(sid).length > 0;
   }
 
   function appendChatMessage(role, text, opts = {}) {
@@ -964,67 +1001,52 @@
       const log = loadChatHistory(chatSessionId);
       log.push({ role, text, ts: Date.now() });
       saveChatHistory(chatSessionId, log);
+      updateLoadHistoryButton?.();
     }
   }
 
-  function rehydrateChatFromHistory(sid) {
-    const log = loadChatHistory(sid);
-    if (!log.length) return;
-    chatLog.querySelector(".chat-empty")?.remove();
-    log.forEach(m => appendChatMessage(m.role, m.text, { skipPersist: true }));
-  }
-
-  function resetChat() {
+  // Switch the chat panel to the project context derived from the current URL.
+  // No auto-rehydrate; the user clicks "Load history" if they want the
+  // previous conversation for this project back.
+  let chatProjectContext = null;
+  function syncChatProjectContext() {
+    const nextSid = deriveChatSessionId();
+    if (chatSessionId === nextSid) {
+      updateLoadHistoryButton();
+      return;
+    }
     if (chatEventSource) { chatEventSource.close(); chatEventSource = null; }
-    if (chatSessionId) clearChatHistory(chatSessionId);
-    chatSessionId = null;
-    setLastSessionId(null);
+    chatSessionId = nextSid;
+    chatProjectContext = currentProjectId() || null;
     chatLog.innerHTML = `
       <div class="chat-empty">
         <p>Conversational interaction with any agent on the SAM mesh.</p>
-        <p class="muted">Pick an agent below and type a message to start.</p>
+        <p class="muted">${chatProjectContext
+          ? `Chat is scoped to <code>${escapeHtml(chatProjectContext)}</code>. ` +
+            `Click <strong>Load history</strong> above to restore previous messages, or just type to start a fresh thread.`
+          : `No project active — pick one from the sidebar to scope the chat, or talk to any mesh agent directly.`}
+        </p>
       </div>`;
-    chatAttachments = [];
-    renderAttachList();
+    updateLoadHistoryButton();
   }
-  document.getElementById("chat-new")?.addEventListener("click", resetChat);
 
-  // ---------- chat file attachments ----------
-  let chatAttachments = [];     // [{name, mime_type, bytes:base64}]
-  const attachInput = document.getElementById("chat-attach-input");
-  const attachList = document.getElementById("chat-attach-list");
-
-  function renderAttachList() {
-    if (!attachList) return;
-    if (!chatAttachments.length) { attachList.innerHTML = ""; return; }
-    attachList.innerHTML = chatAttachments.map((f, i) =>
-      `<span class="chat-attach-chip">
-         <span class="chat-attach-name" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</span>
-         <button type="button" data-attach-remove="${i}" aria-label="Remove">×</button>
-       </span>`
-    ).join("");
-  }
-  attachList?.addEventListener("click", (e) => {
-    const btn = e.target.closest("[data-attach-remove]");
+  function updateLoadHistoryButton() {
+    const btn = document.getElementById("chat-load-history");
     if (!btn) return;
-    const idx = parseInt(btn.getAttribute("data-attach-remove"), 10);
-    chatAttachments.splice(idx, 1);
-    renderAttachList();
-  });
-  attachInput?.addEventListener("change", async () => {
-    const files = Array.from(attachInput.files || []);
-    for (const f of files) {
-      try {
-        const buf = await f.arrayBuffer();
-        const b64 = btoa(String.fromCharCode(...new Uint8Array(buf)));
-        chatAttachments.push({ name: f.name, mime_type: f.type || "application/octet-stream", bytes: b64 });
-      } catch (err) {
-        console.error("Failed to read attachment", f.name, err);
-      }
-    }
-    attachInput.value = "";
-    renderAttachList();
-  });
+    btn.disabled = !hasChatHistory(chatSessionId);
+    btn.title = btn.disabled
+      ? "No saved conversation for this context yet."
+      : "Load previous conversation for this project";
+  }
+
+  function loadHistoryForCurrentContext() {
+    if (!chatSessionId) return;
+    chatLog.querySelector(".chat-empty")?.remove();
+    const log = loadChatHistory(chatSessionId);
+    log.forEach(m => appendChatMessage(m.role, m.text, { skipPersist: true }));
+    if (!chatEventSource) openSseStream(chatSessionId);
+  }
+  document.getElementById("chat-load-history")?.addEventListener("click", loadHistoryForCurrentContext);
 
   function openSseStream(sessionId) {
     if (chatEventSource) chatEventSource.close();
@@ -1069,6 +1091,15 @@
   // Re-poll periodically so newly-joined agents on the mesh appear in the picker
   setInterval(loadAgents, 15000);
 
+  // Enter submits, Shift+Enter inserts a newline (chat-app convention).
+  chatInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      if (typeof chatForm.requestSubmit === "function") chatForm.requestSubmit();
+      else chatForm.dispatchEvent(new Event("submit", { cancelable: true }));
+    }
+  });
+
   chatForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = chatInput.value.trim();
@@ -1076,11 +1107,9 @@
     const eid = currentProjectId();
     const agent = chatAgentSelect?.value || "";
 
-    if (!chatSessionId) {
-      chatSessionId = crypto.randomUUID ? crypto.randomUUID() : String(Date.now());
-      setLastSessionId(chatSessionId);
-      openSseStream(chatSessionId);
-    }
+    // Ensure the per-project sessionId is current and the SSE stream is live.
+    if (!chatSessionId) chatSessionId = deriveChatSessionId();
+    if (!chatEventSource) openSseStream(chatSessionId);
 
     appendChatMessage("user", text);
     chatInput.value = "";
@@ -1088,11 +1117,6 @@
     const body = { text, session_id: chatSessionId };
     if (agent) body.agent = agent;
     if (eid) body.engagement_id = eid;
-    if (chatAttachments.length) {
-      body.files = chatAttachments.slice();
-      chatAttachments = [];
-      renderAttachList();
-    }
 
     try {
       await fetch("/api/chat/message", {
@@ -1436,13 +1460,6 @@
     const me = await loadCurrentUser();
     if (me === null) return;        // redirected to /login
     await Promise.all([loadProjects(), loadAgents()]);
-    // Restore the previous chat session (if any) so refresh doesn't lose state.
-    const prevSid = getLastSessionId();
-    if (prevSid) {
-      chatSessionId = prevSid;
-      rehydrateChatFromHistory(prevSid);
-      openSseStream(prevSid);
-    }
-    await render();
+    await render();        // render() calls syncChatProjectContext()
   })();
 })();

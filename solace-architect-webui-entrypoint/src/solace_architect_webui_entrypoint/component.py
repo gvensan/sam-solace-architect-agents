@@ -368,14 +368,53 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         # Inject the auth session token so _extract_initial_claims can resolve the user.
         body["session_token"] = request.cookies.get(SESSION_COOKIE)
 
-        # Lazy-create the SSE queue for this session
+        # Lazy-create the SSE queue for this session.
         self._sse_queues.setdefault(session_id, asyncio.Queue())
 
-        # Translate + dispatch through the SAM gateway base class machinery.
-        # BaseGatewayComponent provides the async dispatch path internally.
-        await self.process_external_event(body)
-        return web.json_response({"session_id": session_id, "accepted": True},
-                                 headers={"Cache-Control": "no-store"})
+        # Resolve identity + translate browser body → (target_agent, A2A parts, ctx).
+        try:
+            user_identity = await self._extract_initial_claims(body)
+            target_agent, parts, request_context = await self._translate_external_input(body)
+        except Exception as e:
+            log.exception("%s Chat translate failed", self.log_identifier)
+            return web.json_response({"error": f"translate failed: {e}"}, status=400,
+                                     headers={"Cache-Control": "no-store"})
+
+        if not target_agent:
+            return web.json_response(
+                {"error": "no target agent — set 'agent' in body or 'default_agent_name' in config"},
+                status=400, headers={"Cache-Control": "no-store"},
+            )
+
+        # Submit through BaseGatewayComponent's dispatch path. SAM publishes to
+        # the agent over A2A; responses arrive on the gateway response/status
+        # topics and route back into _send_*_to_external → SSE queue (we bridge
+        # back from SAM's loop via run_coroutine_threadsafe in _enqueue_sse).
+        # NOTE: submit_a2a_task expects to run on SAM's asyncio loop, not the
+        # HTTP loop this handler is on. We cross loops with run_coroutine_threadsafe.
+        try:
+            sam_loop = self.get_async_loop()
+            coro = self.submit_a2a_task(
+                target_agent_name=target_agent,
+                a2a_parts=parts,
+                external_request_context=request_context,
+                user_identity=user_identity,
+                is_streaming=True,
+            )
+            if sam_loop is None or sam_loop is asyncio.get_event_loop():
+                task_id = await coro
+            else:
+                fut = asyncio.run_coroutine_threadsafe(coro, sam_loop)
+                task_id = await asyncio.wrap_future(fut)
+        except Exception as e:
+            log.exception("%s Chat dispatch failed", self.log_identifier)
+            return web.json_response({"error": f"dispatch failed: {e}"}, status=502,
+                                     headers={"Cache-Control": "no-store"})
+
+        return web.json_response(
+            {"session_id": session_id, "task_id": task_id, "accepted": True},
+            headers={"Cache-Control": "no-store"},
+        )
 
     async def _health(self, request: web.Request) -> web.Response:
         """Liveness probe — always 200 once the HTTP server is up."""

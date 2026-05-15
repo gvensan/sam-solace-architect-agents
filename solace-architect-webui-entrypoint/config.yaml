@@ -5,10 +5,11 @@
 # Run with:  sam run config.yaml
 # Or inside a SAM project that has installed this plugin via `sam plugin add`.
 
-log:
-  stdout_log_level: ${LOG_LEVEL, INFO}
-  log_file_level: ${LOG_LEVEL, INFO}
-  log_file: logs/sam-solace-architect-webui.log
+# Logging note: when the host SAM project sets LOGGING_CONFIG_PATH, a `log:`
+# block here is ignored. For per-plugin SA log files, set SA_LOG_DIR (and
+# optionally SA_LOG_LEVEL). The webui entrypoint then writes
+# ${SA_LOG_DIR}/solace_architect_webui_entrypoint.log in addition to the
+# combined sam.log. See solace_architect_core.logging_setup.
 
 shared_config:
   - broker_connection: &broker_connection
@@ -41,7 +42,10 @@ apps:
       namespace: ${NAMESPACE}                       # required — fails loud if missing
       artifact_service: *default_artifact_service
       gateway_id: ${WEBUI_ENTRYPOINT_ID, sa-webui-ep-01}
-      default_agent_name: SAOrchestratorAgent
+      # Phase 1: route to SADiscoveryAgent directly. Once SAOrchestratorAgent
+      # exists, change this back and let Orchestrator multiplex via A2A peer
+      # delegation.
+      default_agent_name: SADiscoveryAgent
 
       # WebUI-specific adapter config (consumed by SolaceArchitectWebuiComponent)
       # Port defaults to 9080 — SAM's stock webui gateway already binds 8080, so
