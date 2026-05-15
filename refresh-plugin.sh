@@ -63,7 +63,24 @@ pip cache remove "${plugin//-/_}*" >/dev/null 2>&1 || true
 pip install --force-reinstall --no-deps "$url"
 
 if [ "$skip_add" = "0" ]; then
-  echo "→ re-registering '${plugin}' as a SAM component (refreshes local config)"
+  # `sam plugin add` writes <cwd>/configs/<kind>/<plugin>.yaml. If we run it
+  # from anywhere other than a SAM project directory, it silently drops the
+  # config in the wrong place. Refuse with a clear hint instead of failing
+  # mysteriously later. A SAM project has at least a configs/ directory at
+  # its root (created by `sam init`).
+  if [ ! -d "configs" ]; then
+    echo >&2
+    echo "✗ Current directory does not look like a SAM project (no ./configs/)." >&2
+    echo "  'sam plugin add' would drop ${plugin}.yaml under \$PWD/configs/<kind>/, not under your SAM project." >&2
+    echo "  Either:" >&2
+    echo "    cd /path/to/your-sam-project && $(dirname "$0")/$(basename "$0") ${plugin}" >&2
+    echo "    # or skip the component registration step:" >&2
+    echo "    $0 ${plugin} --skip-add" >&2
+    echo >&2
+    echo "  (The pip install above already succeeded; the package is in the venv.)" >&2
+    exit 2
+  fi
+  echo "→ re-registering '${plugin}' as a SAM component in $(pwd)/configs/"
   sam plugin add "$plugin" --plugin "$plugin"
 fi
 

@@ -308,6 +308,16 @@ apps:
       enable_embed_resolution: true
       enable_artifact_content_instruction: true
 
+      # Discovery & inter-agent communication
+      agent_card_publishing:
+        interval_seconds: 10
+      agent_discovery:
+        enabled: true
+      inter_agent_communication:
+        allow_list: ["*"]
+        deny_list: []
+        request_timeout_seconds: 60
+
       agent_card:
         description: >
           Refines a partially-filled intake into a complete Solace discovery
