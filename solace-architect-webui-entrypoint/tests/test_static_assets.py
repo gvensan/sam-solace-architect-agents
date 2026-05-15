@@ -26,29 +26,70 @@ def test_required_static_files_present():
         assert p.exists(), f"missing static asset: {p.relative_to(PKG_ROOT)}"
 
 
-def test_dashboard_index_has_seven_nav_links():
-    """Overview, Timeline, Decisions, Open Items, Artifacts, Stats, Export, Intake, Chat."""
+def test_dashboard_shell_has_route_aware_nav():
+    """Three-pane shell: chat lives in the right panel, NOT in the left sidebar's view nav."""
     html = (PKG_ROOT / "webui" / "index.html").read_text()
-    # Sidebar nav has 9 entries per v2spec §6.1 (6 dashboard views + Export + Intake + Chat).
-    assert html.count('data-view="') >= 7
+    expected_views = ("overview", "timeline", "decisions", "open-items",
+                      "artifacts", "stats", "export")
+    for v in expected_views:
+        assert f'data-view="{v}"' in html, f"missing nav link for view {v!r}"
+    # chat is the right-panel surface now — it must NOT be a sidebar nav target
+    assert 'data-view="chat"' not in html, "chat should be the right-panel surface, not a sidebar view"
 
 
-def test_intake_form_has_save_load_yaml_buttons():
+def test_dashboard_shell_has_three_pane_layout():
+    """Header has sidebar + chat toggles; layout has sidebar, content, resize handle, chat panel."""
+    html = (PKG_ROOT / "webui" / "index.html").read_text()
+    for required in ("sidebar-toggle", "chat-toggle", "chat-panel",
+                     "chat-resize-handle", "sidebar-backdrop"):
+        assert f'id="{required}"' in html, f"missing element id={required!r}"
+
+
+def test_styles_define_responsive_breakpoints():
+    """Chat should collapse to modal below 900px; sidebar to overlay below 768px."""
+    css = (PKG_ROOT / "webui" / "assets" / "styles.css").read_text()
+    assert "@media (max-width: 900px)" in css
+    assert "@media (max-width: 768px)" in css
+
+
+def test_app_js_persists_layout_state_in_localstorage():
+    """Sidebar / chat / chat-width are persisted across reloads."""
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    for key in ("solace-architect-sidebar", "solace-architect-chat",
+                "solace-architect-chat-width", "solace-architect-theme"):
+        assert key in js, f"missing localStorage key {key!r}"
+
+
+def test_intake_form_has_required_action_buttons():
+    """V1-ported intake has Save draft, Download Markdown/YAML, Submit to architect."""
     html = (PKG_ROOT / "webui" / "intake" / "index.html").read_text()
-    assert 'id="save-yaml"' in html
-    assert 'id="save-md"' in html
-    assert 'id="load-yaml"' in html
-    assert 'id="submit"' in html
+    assert "saveDraft()" in html
+    assert "downloadMD()" in html
+    assert "downloadYAML()" in html
+    assert "submitToServer()" in html
+    assert 'id="btn-submit"' in html
 
 
-def test_intake_form_calls_correct_apis():
-    """Verify the JavaScript is wired to the real API routes."""
+def test_intake_form_calls_v2_submit_endpoint():
+    """Submit must POST to V2's /api/intake/submit, not V1's /api/submit."""
     html = (PKG_ROOT / "webui" / "intake" / "index.html").read_text()
-    assert "/api/intake/preview" in html
-    assert "/api/intake/download-yaml" in html
-    assert "/api/intake/download-markdown" in html
-    assert "/api/intake/parse-yaml" in html
-    assert "/api/intake/submit" in html
+    assert "/api/intake/submit" in html, "V2 submit endpoint missing"
+    assert "/api/submit'" not in html, "V1 endpoint /api/submit should have been replaced"
+
+
+def test_intake_form_redirects_to_project_overview_on_success():
+    """After submit, the form should route to /projects/{engagement_id}/overview."""
+    html = (PKG_ROOT / "webui" / "intake" / "index.html").read_text()
+    assert "/projects/" in html
+    assert "engagement_id" in html
+
+
+def test_intake_form_embeds_integration_catalog():
+    """V1 form bundles the Integration Hub catalog for offline autocomplete."""
+    html = (PKG_ROOT / "webui" / "intake" / "index.html").read_text()
+    assert "const CATALOG = " in html
+    assert "Amazon S3" in html      # any well-known integration entry
+    assert "indirect_paths" in html
 
 
 def test_dashboard_styles_have_dark_mode_palette():

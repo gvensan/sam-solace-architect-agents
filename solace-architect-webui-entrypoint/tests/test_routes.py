@@ -86,17 +86,20 @@ async def test_intake_preview_returns_routing_decision():
 
 @pytest.mark.asyncio
 async def test_intake_submit_creates_project_and_writes_brief():
+    """intake_submit takes **kwargs (the adapter spreads body keys), so we mirror that here."""
     from solace_architect_webui_entrypoint.routes.api import intake_submit
-    intake = {
-        "project_name": "Pilot E2E",
-        "project_type": "new-build",
-        "systems": [{"name": "API"}],
-        "requirements": {"topology": "single-site", "delivery_mode": "guaranteed"},
-        "preferences": {"provision_event_portal": False},
-    }
-    r = await intake_submit(intake=intake)
+    r = await intake_submit(
+        project_name="Pilot E2E",
+        project_type="new-build",
+        systems=[{"name": "API"}],
+        requirements={"topology": "single-site", "delivery_mode": "guaranteed"},
+        preferences={"provision_event_portal": False},
+    )
     assert r["engagement_id"]
     # Verify brief is on disk
     from solace_architect_core._storage import read_text
     brief = read_text(r["engagement_id"], "discovery/discovery-brief.yaml")
     assert "Pilot E2E" in brief
+    # And the lossless JSON snapshot
+    intake_json = read_text(r["engagement_id"], "discovery/intake.json")
+    assert "Pilot E2E" in intake_json

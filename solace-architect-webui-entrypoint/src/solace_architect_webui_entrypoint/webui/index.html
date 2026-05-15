@@ -6,44 +6,102 @@
   <link rel="stylesheet" href="/assets/styles.css">
   <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 </head>
-<body>
+<body data-sidebar="open" data-chat="closed">
   <header class="app-header">
+    <button id="sidebar-toggle" class="icon-btn" title="Toggle sidebar" aria-label="Toggle sidebar">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+      </svg>
+    </button>
     <div class="logo">
       <span class="logo-mark">SA</span>
       <span class="logo-title">Solace Architect</span>
     </div>
     <div class="status-bar" id="status-bar">Idle</div>
     <div class="header-actions">
-      <button id="theme-toggle" title="Toggle theme">☾</button>
+      <span id="user-chip" class="user-chip"></span>
+      <button id="chat-toggle" class="icon-btn chat-toggle-btn" title="Toggle chat" aria-label="Toggle chat panel">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+        </svg>
+        <span class="chat-toggle-label">Chat</span>
+      </button>
+      <button id="theme-toggle" class="icon-btn" title="Toggle theme" aria-label="Toggle theme">☾</button>
       <span class="version">V2.0.0-alpha</span>
     </div>
   </header>
 
   <div class="app-layout">
-    <nav class="sidebar">
-      <div class="project-switcher">
-        <select id="project-select"><option value="">— pick a project —</option></select>
-        <button id="new-project" title="New project">+</button>
+    <!-- LEFT: collapsible sidebar — has both a full view AND a slim icon rail -->
+    <nav class="sidebar" id="sidebar">
+      <!-- Slim icon rail (visible when sidebar is collapsed) -->
+      <div class="sidebar-rail">
+        <button id="rail-active-project" class="rail-icon rail-icon-project hidden"
+                title="Current project — click to expand sidebar"
+                aria-label="Active project (click to expand sidebar)">
+          <span class="rail-letter">?</span>
+        </button>
+        <a href="/intake/new" id="rail-new-project" class="rail-icon rail-icon-new"
+           title="New project" aria-label="New project">
+          <span aria-hidden="true">+</span>
+        </a>
       </div>
-      <ul class="nav-links">
-        <li><a href="#overview" data-view="overview">Overview</a></li>
-        <li><a href="#timeline" data-view="timeline">Timeline</a></li>
-        <li><a href="#decisions" data-view="decisions">Decisions</a></li>
-        <li><a href="#open-items" data-view="open-items">Open Items</a></li>
-        <li><a href="#artifacts" data-view="artifacts">Artifacts</a></li>
-        <li><a href="#stats" data-view="stats">Stats</a></li>
-        <li><a href="#export" data-view="export">Export</a></li>
-        <li><a href="#intake" data-view="intake">Intake Form</a></li>
-        <li><a href="#chat" data-view="chat">Chat</a></li>
-      </ul>
+
+      <!-- Full sidebar content (visible when sidebar is expanded) -->
+      <div class="sidebar-full">
+        <div class="sidebar-section">
+          <div class="sidebar-section-title">Projects</div>
+          <div id="project-list" class="project-list"></div>
+          <a href="/intake/new" class="new-project-btn">+ New project</a>
+        </div>
+
+        <div id="project-nav" class="sidebar-section project-nav hidden">
+          <div class="sidebar-section-title">Active project</div>
+          <a href="#" class="nav-link" data-view="overview">Overview</a>
+          <a href="#" class="nav-link" data-view="decisions">Decisions</a>
+          <a href="#" class="nav-link" data-view="timeline">Timeline</a>
+          <a href="#" class="nav-link" data-view="open-items">Open Items</a>
+          <a href="#" class="nav-link" data-view="artifacts">Artifacts</a>
+          <a href="#" class="nav-link" data-view="stats">Stats</a>
+          <a href="#" class="nav-link" data-view="export">Export</a>
+        </div>
+      </div>
     </nav>
 
+    <!-- Backdrop for mobile sidebar overlay -->
+    <div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+    <!-- MIDDLE: main content -->
     <main class="content" id="content">
-      <div class="welcome">
-        <h1>Solace Architect</h1>
-        <p>Pick a project from the sidebar, create a new one, or start an engagement from the chat.</p>
-      </div>
+      <div class="welcome"><h1>Loading…</h1></div>
     </main>
+
+    <!-- Resize handle (between main + chat) -->
+    <div class="chat-resize-handle" id="chat-resize-handle" aria-hidden="true"></div>
+
+    <!-- RIGHT: chat panel -->
+    <aside class="chat-panel" id="chat-panel" aria-label="Chat with SAOrchestratorAgent">
+      <div class="chat-header">
+        <span class="chat-title">Chat</span>
+        <button id="chat-close" class="icon-btn" title="Close chat" aria-label="Close chat">×</button>
+      </div>
+      <div id="chat-log" class="chat-log">
+        <div class="chat-empty">
+          <p>Conversational interaction with any agent on the SAM mesh.</p>
+          <p class="muted">Pick an agent below and type a message to start.</p>
+        </div>
+      </div>
+      <form id="chat-form" class="chat-form">
+        <input id="chat-input" autocomplete="off" placeholder="Type a message…">
+        <div class="chat-form-controls">
+          <label class="chat-agent-picker">
+            <span class="chat-agent-label">Agent:</span>
+            <select id="chat-agent-select" aria-label="Target agent"></select>
+          </label>
+          <button id="chat-send-btn" type="submit">Send</button>
+        </div>
+      </form>
+    </aside>
   </div>
 
   <script src="/assets/app.js"></script>

@@ -31,6 +31,17 @@ async def archive_engagement(project_id: str) -> Any:
     return (await project_tools.archive_project(project_id)).data
 
 
+async def update_engagement(project_id: str, name: str | None = None,
+                            description: str | None = None) -> Any:
+    return (await project_tools.update_project_metadata(
+        project_id, name=name, description=description)).data
+
+
+async def clone_engagement(source_project_id: str, new_name: str | None = None) -> Any:
+    return (await project_tools.clone_project(
+        source_project_id, new_name=new_name)).data
+
+
 # ----- Dashboard data -----
 
 async def dashboard_overview(engagement_id: str) -> Any:
@@ -78,17 +89,22 @@ async def list_engagement_artifacts(engagement_id: str, category: str | None = N
 
 # ----- Intake -----
 
-async def intake_preview(partial_intake: dict) -> Any:
-    return (await intake_tools.compute_intake_preview(partial_intake)).data
+async def intake_preview(**partial_intake) -> Any:
+    """Body is the form-state dict; the adapter spreads keys → we re-pack here.
+
+    Accepts both flat (V2) and nested (V1) shapes; normalizes before evaluating.
+    """
+    flat = _normalize_intake_shape(partial_intake)
+    return (await intake_tools.compute_intake_preview(flat)).data
 
 
-async def intake_download_yaml(intake_dict: dict) -> str:
+async def intake_download_yaml(**intake_dict) -> Any:
     import yaml
-    return yaml.safe_dump(intake_dict, default_flow_style=False, sort_keys=False)
+    return {"yaml": yaml.safe_dump(intake_dict, default_flow_style=False, sort_keys=False)}
 
 
-async def intake_download_markdown(intake_dict: dict) -> str:
-    return (await intake_tools.render_intake_markdown(intake_dict)).data
+async def intake_download_markdown(**intake_dict) -> Any:
+    return {"markdown": (await intake_tools.render_intake_markdown(intake_dict)).data}
 
 
 async def intake_autocomplete(query: str) -> Any:
@@ -111,24 +127,41 @@ async def intake_parse_yaml(yaml_text: str) -> Any:
             pass
 
 
-async def intake_submit(intake: dict) -> Any:
+async def intake_submit(**intake) -> Any:
     """Create a project + persist the intake; agent dispatch happens via the SAM runtime.
 
-    Returns: {engagement_id, project, open_items}.
+    Persists TWO artifacts:
+      - ``discovery/intake.json``  — lossless raw form payload (re-hydratable into the form)
+      - ``discovery/discovery-brief.yaml`` — human-readable, agent-consumable view
+
+    Returns: ``{engagement_id, project, open_items}``.
+
+    Accepts both V2 flat shape (project_name, project_type, systems, requirements, …)
+    and V1-style nested shape (project: {name, type}, landscape: {systems, vertical}, …).
     """
-    import yaml
-    name = intake.get("project_name") or "untitled"
+    import json, yaml
+
+    flat = _normalize_intake_shape(intake)
+
+    name = flat.get("project_name") or "untitled"
     p = await project_tools.create_project(name=name)
     eid = p.data["id"]
 
-    # Persist the intake as the discovery brief
-    brief_yaml = yaml.safe_dump(intake, default_flow_style=False, sort_keys=False)
+    # 1) Raw form payload — lossless, round-trippable. Use the ORIGINAL (un-normalized)
+    # intake so the form can re-hydrate from it byte-perfect.
+    await artifact_tools.write_artifact(
+        eid, "discovery/intake.json",
+        json.dumps(intake, indent=2, sort_keys=False),
+    )
+
+    # 2) Discovery brief — the normalized view that downstream agents read.
+    brief_yaml = yaml.safe_dump(flat, default_flow_style=False, sort_keys=False)
     await artifact_tools.write_artifact(eid, "discovery/discovery-brief.yaml", brief_yaml)
 
-    # Emit open-items for missing/ambiguous fields (mirrors parse_intake_document's logic)
+    # Emit open-items for missing required fields (post-normalization).
     open_items = []
     for required in ("project_name", "project_type", "systems", "requirements"):
-        if not intake.get(required):
+        if not flat.get(required):
             open_items.append({"severity": "blocking", "source": "intake",
                                "description": f"Required field missing: {required}"})
             await decision_tools.record_open_item(
@@ -138,6 +171,55 @@ async def intake_submit(intake: dict) -> Any:
             )
 
     return {"engagement_id": eid, "project": p.data, "open_items": open_items}
+
+
+def _normalize_intake_shape(intake: dict) -> dict:
+    """Accept V1 nested {project, landscape, requirements, goals} OR V2 flat shape.
+
+    Returns a flat dict that downstream tools (compute_intake_preview,
+    get_engagement_plan, etc.) can consume directly.
+    """
+    if not isinstance(intake, dict):
+        return {}
+
+    # If already flat (V2 shape), nothing to do.
+    if "project_name" in intake or "systems" in intake:
+        return intake
+
+    # V1 nested shape — flatten.
+    flat: dict = {}
+    project = intake.get("project") or {}
+    flat["project_name"] = project.get("name")
+    flat["project_type"] = project.get("type")
+
+    landscape = intake.get("landscape") or {}
+    flat["vertical"] = landscape.get("vertical")
+    flat["systems"] = landscape.get("systems") or []
+    flat["existing_messaging"] = landscape.get("existing_messaging")
+    flat["protocols"] = landscape.get("protocols") or []
+    flat["events"] = landscape.get("events") or []
+    flat["aggregate_volumes"] = landscape.get("aggregate_volumes")
+    flat["schemas"] = landscape.get("schemas")
+
+    flat["requirements"] = intake.get("requirements") or {}
+    flat["scale"] = intake.get("scale") or {}
+    flat["goals"] = intake.get("goals") or {}
+    flat["preferences"] = intake.get("preferences") or {}
+
+    # Strip None values so downstream tools don't trip on them.
+    return {k: v for k, v in flat.items() if v not in (None, "", [], {})}
+
+
+async def intake_load(engagement_id: str) -> Any:
+    """Re-hydrate a saved intake. Returns the raw JSON if present, else {}."""
+    import json
+    res = await artifact_tools.read_artifact(engagement_id, "discovery/intake.json")
+    if not res.ok:
+        return {"intake": None, "error": "no saved intake for this engagement"}
+    try:
+        return {"intake": json.loads(res.data)}
+    except (json.JSONDecodeError, ValueError) as e:
+        return {"intake": None, "error": f"intake.json malformed: {e}"}
 
 
 # ----- Exports -----
@@ -168,6 +250,8 @@ API_ROUTES = [
     ("GET",  "/api/projects",                                list_engagements),
     ("POST", "/api/projects",                                create_engagement),
     ("POST", "/api/projects/{project_id}/archive",            archive_engagement),
+    ("PATCH","/api/projects/{project_id}",                    update_engagement),
+    ("POST", "/api/projects/{source_project_id}/clone",       clone_engagement),
     # Dashboard data
     ("GET",  "/api/engagements/{engagement_id}/overview",     dashboard_overview),
     ("GET",  "/api/engagements/{engagement_id}/timeline",     dashboard_timeline),
@@ -186,6 +270,7 @@ API_ROUTES = [
     ("GET",  "/api/intake/autocomplete",                      intake_autocomplete),
     ("POST", "/api/intake/parse-yaml",                        intake_parse_yaml),
     ("POST", "/api/intake/submit",                            intake_submit),
+    ("GET",  "/api/intake/load/{engagement_id}",              intake_load),
     # Exports
     ("GET",  "/api/engagements/{engagement_id}/exports/availability", exports_availability),
     ("POST", "/api/engagements/{engagement_id}/exports/render", exports_render),

@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -35,9 +37,30 @@ from a2a.types import (
     TextPart,
 )
 
+from solace_architect_webui_entrypoint.auth import (
+    AuthState, add_auth_routes, ensure_initialized, install_middleware,
+)
+from solace_architect_webui_entrypoint.auth.middleware import SESSION_COOKIE
+from solace_architect_webui_entrypoint.auth.sessions import validate_session
+from solace_architect_webui_entrypoint.auth.db import user_to_claims
 from solace_architect_webui_entrypoint.routes.api import API_ROUTES
 
 log = logging.getLogger(__name__)
+
+
+# Module-level discovery metadata — solace-ai-connector's Flow machinery reads
+# this when instantiating the component class. Matches the cli-entrypoint pattern.
+info = {
+    "class_name": "SolaceArchitectWebuiComponent",
+    "description": (
+        "HTTP-SSE entrypoint component for Solace Architect. Serves the dashboard, "
+        "intake form, audience-pack reports, and REST API; bridges browser/REST "
+        "traffic to the SAOrchestratorAgent over A2A."
+    ),
+    "config_parameters": [],
+    "input_schema": {"type": "object", "properties": {}},
+    "output_schema": {"type": "object", "properties": {}},
+}
 
 
 def _webui_static_dir() -> Path:
@@ -57,13 +80,38 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         self._host: str = ac.get("host", "0.0.0.0")
         self._show_status_updates: bool = bool(ac.get("show_status_updates", True))
 
+        # Auth state — local SQLite user DB.
+        # DB path is configurable via WEBUI_USERS_DB env var; defaults under
+        # SA_STORAGE_ROOT/__system__/users.db.
+        storage_root = Path(os.environ.get("SA_STORAGE_ROOT", "/tmp/sam-solace-architect"))
+        default_db = storage_root / "__system__" / "users.db"
+        db_path = Path(os.environ.get("WEBUI_USERS_DB", str(default_db)))
+
+        require_auth = (os.environ.get("WEBUI_REQUIRE_AUTH", "true").lower() != "false")
+        enable_signup = (os.environ.get("WEBUI_ENABLE_SIGNUP", "true").lower() != "false")
+
+        self._auth_state: AuthState = ensure_initialized(
+            db_path,
+            require_auth=require_auth,
+            enable_signup=enable_signup,
+            csrf_secret=os.environ.get("WEBUI_CSRF_SECRET"),
+        )
+        log.info(
+            "%s Auth: db=%s, require_auth=%s, enable_signup=%s",
+            self.log_identifier, db_path, require_auth, enable_signup,
+        )
+
         # Per-session SSE queues. Key: session_id (== A2A request_context["session_id"]).
+        # Created lazily on the HTTP loop thread; cross-thread access uses run_coroutine_threadsafe.
         self._sse_queues: Dict[str, asyncio.Queue] = {}
 
-        # aiohttp web objects (set in _start_listener)
+        # aiohttp web objects (set in _start_listener's worker thread)
         self._app: Optional[web.Application] = None
         self._runner: Optional[web.AppRunner] = None
         self._site: Optional[web.TCPSite] = None
+        self._http_loop: Optional[asyncio.AbstractEventLoop] = None   # the HTTP thread's loop
+        self._http_thread: Optional[threading.Thread] = None
+        self._http_ready = threading.Event()                          # signals listener up
 
     # ---------- SAM-required lifecycle hooks ----------
 
@@ -72,52 +120,108 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
     ) -> Optional[Dict[str, Any]]:
         """Return claims for the browser user.
 
-        Phase 1: anonymous. Phase 2 reads OIDC token from external_event_data.headers.
+        Reads from the validated session token in the cookie. If WEBUI_REQUIRE_AUTH
+        is false (dev bypass), returns anonymous.
         """
-        return {
-            "id": external_event_data.get("user_id", "anonymous"),
-            "name": external_event_data.get("user_name", "anonymous"),
-            "source": "webui",
-        }
+        if not self._auth_state.require_auth:
+            return {"id": "anonymous", "name": "anonymous", "email": None,
+                    "groups": [], "source": "webui", "is_admin": False}
+
+        session_token = external_event_data.get("session_token") if isinstance(external_event_data, dict) else None
+        if not session_token:
+            # Anonymous fallback — agent will see anonymous user.
+            return {"id": "anonymous", "name": "anonymous", "email": None,
+                    "groups": [], "source": "webui", "is_admin": False}
+
+        user_row = validate_session(self._auth_state, session_token)
+        if not user_row:
+            return {"id": "anonymous", "name": "anonymous", "email": None,
+                    "groups": [], "source": "webui", "is_admin": False}
+        return user_to_claims(user_row)
 
     def _start_listener(self) -> None:
-        """Start the aiohttp HTTP server on the configured port."""
-        log.info("%s Starting WebUI HTTP listener on %s:%d", self.log_identifier, self._host, self._port)
+        """Start the aiohttp HTTP server in its own thread with its own event loop.
 
-        self._app = web.Application()
+        SAM runs its asyncio loop in a dedicated thread already (per the
+        SamComponentBase logs). We can't share that loop directly without coordinated
+        startup — so the HTTP server gets its own thread + loop and cross-thread
+        events flow via asyncio.run_coroutine_threadsafe (see _enqueue_sse).
+        """
+        log.info("%s Starting WebUI HTTP listener on %s:%d",
+                 self.log_identifier, self._host, self._port)
 
-        # Static assets — index, dashboard SPA, intake form, CSS/JS bundles
-        static_dir = _webui_static_dir()
-        self._app.router.add_get("/", self._serve_index)
-        self._app.router.add_get("/intake/", self._serve_intake)
-        self._app.router.add_get("/intake/index.html", self._serve_intake)
-        self._app.router.add_static("/assets/", static_dir / "assets", show_index=False)
+        def _run_http_server() -> None:
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                self._http_loop = loop
 
-        # SSE chat stream — session-scoped
-        self._app.router.add_get("/api/chat/stream/{session_id}", self._sse_chat_stream)
-        self._app.router.add_post("/api/chat/message", self._chat_message)
+                self._app = web.Application()
+                # Auth: middleware FIRST (applies to every request), then auth routes.
+                install_middleware(self._app, self._auth_state)
+                add_auth_routes(self._app, self._auth_state)
 
-        # All other JSON API routes are wired declaratively via routes/api.py.
-        # We adapt each handler to aiohttp request/response with Cache-Control: no-store.
-        for method, path, handler in API_ROUTES:
-            self._app.router.add_route(method, path, self._adapt_api_handler(handler))
+                static_dir = _webui_static_dir()
+                # Static assets — the dashboard SPA shell handles routing client-side
+                # for /, /projects/{id}/{view}, /intake/new, /intake/edit/{id}, etc.
+                self._app.router.add_get("/", self._serve_index)
+                self._app.router.add_get("/projects/{tail:.*}", self._serve_index)
+                self._app.router.add_get("/intake", self._serve_intake_form)
+                self._app.router.add_get("/intake/{tail:.*}", self._serve_intake_form)
+                self._app.router.add_static("/assets/", static_dir / "assets", show_index=False)
+                # SSE chat stream + chat POST + agent discovery
+                self._app.router.add_get("/api/chat/stream/{session_id}", self._sse_chat_stream)
+                self._app.router.add_post("/api/chat/message", self._chat_message)
+                self._app.router.add_get("/api/agents", self._agents_list)
+                # Declarative JSON API routes
+                for method, path, handler in API_ROUTES:
+                    self._app.router.add_route(method, path, self._adapt_api_handler(handler))
 
-        # Run the aiohttp server inside the existing event loop.
-        loop = asyncio.get_event_loop()
-        self._runner = web.AppRunner(self._app)
-        loop.run_until_complete(self._runner.setup())
-        self._site = web.TCPSite(self._runner, host=self._host, port=self._port)
-        loop.run_until_complete(self._site.start())
-        log.info("%s WebUI listening at http://%s:%d", self.log_identifier, self._host, self._port)
+                self._runner = web.AppRunner(self._app)
+                loop.run_until_complete(self._runner.setup())
+                self._site = web.TCPSite(self._runner, host=self._host, port=self._port)
+                loop.run_until_complete(self._site.start())
+
+                log.info("%s WebUI listening at http://%s:%d",
+                         self.log_identifier, self._host, self._port)
+                self._http_ready.set()
+
+                loop.run_forever()    # serve requests until _stop_listener triggers loop.stop
+            except Exception:
+                log.exception("%s HTTP server failed to start", self.log_identifier)
+                self._http_ready.set()    # unblock waiters even on failure
+
+        self._http_thread = threading.Thread(
+            target=_run_http_server, name="sa-webui-http", daemon=True,
+        )
+        self._http_thread.start()
+
+        # Block briefly so SAM doesn't proceed before the listener is bound (or failed).
+        if not self._http_ready.wait(timeout=15):
+            log.error("%s HTTP listener didn't signal readiness within 15s",
+                      self.log_identifier)
 
     def _stop_listener(self) -> None:
-        """Stop the HTTP server cleanly."""
+        """Stop the HTTP server cleanly from SAM's main thread."""
         log.info("%s Stopping WebUI HTTP listener…", self.log_identifier)
-        loop = asyncio.get_event_loop()
-        if self._site:
-            loop.run_until_complete(self._site.stop())
-        if self._runner:
-            loop.run_until_complete(self._runner.cleanup())
+        if not self._http_loop:
+            return
+
+        async def _shutdown() -> None:
+            if self._site:
+                await self._site.stop()
+            if self._runner:
+                await self._runner.cleanup()
+
+        future = asyncio.run_coroutine_threadsafe(_shutdown(), self._http_loop)
+        try:
+            future.result(timeout=5)
+        except Exception:
+            log.exception("%s Error during HTTP listener shutdown", self.log_identifier)
+        finally:
+            self._http_loop.call_soon_threadsafe(self._http_loop.stop)
+            if self._http_thread:
+                self._http_thread.join(timeout=5)
 
     async def _translate_external_input(
         self, external_event: Any,
@@ -191,10 +295,12 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
     # ---------- HTTP handlers ----------
 
     async def _serve_index(self, request: web.Request) -> web.Response:
+        """Serve the dashboard SPA shell. Same file for /, /projects/{...}, etc."""
         return web.FileResponse(_webui_static_dir() / "index.html",
                                 headers={"Cache-Control": "no-store"})
 
-    async def _serve_intake(self, request: web.Request) -> web.Response:
+    async def _serve_intake_form(self, request: web.Request) -> web.Response:
+        """Serve the intake form for /intake/new and /intake/edit/{id}."""
         return web.FileResponse(_webui_static_dir() / "intake" / "index.html",
                                 headers={"Cache-Control": "no-store"})
 
@@ -226,6 +332,9 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         session_id = body.get("session_id") or str(uuid.uuid4())
         body["session_id"] = session_id
 
+        # Inject the auth session token so _extract_initial_claims can resolve the user.
+        body["session_token"] = request.cookies.get(SESSION_COOKIE)
+
         # Lazy-create the SSE queue for this session
         self._sse_queues.setdefault(session_id, asyncio.Queue())
 
@@ -234,6 +343,22 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         await self.process_external_event(body)
         return web.json_response({"session_id": session_id, "accepted": True},
                                  headers={"Cache-Control": "no-store"})
+
+    async def _agents_list(self, request: web.Request) -> web.Response:
+        """List agents currently discovered on the SAM mesh (for the chat picker)."""
+        default_name = self.get_config("default_agent_name") or ""
+        try:
+            names = list(self.agent_registry.get_agent_names() or [])
+        except Exception:
+            names = []
+        if default_name and default_name not in names:
+            names.append(default_name)
+        names = sorted(set(names))
+        return web.json_response(
+            {"agents": [{"name": n, "default": n == default_name} for n in names],
+             "default": default_name},
+            headers={"Cache-Control": "no-store"},
+        )
 
     async def _sse_chat_stream(self, request: web.Request) -> web.StreamResponse:
         """SSE stream of agent events for a single session."""
@@ -262,12 +387,21 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
     # ---------- helpers ----------
 
     async def _enqueue_sse(self, ctx: Dict[str, Any], payload: Dict[str, Any]) -> None:
+        """Bridge an SSE event from SAM's loop thread to the HTTP loop thread."""
         session_id = ctx.get("session_id")
         if not session_id:
             log.warning("%s SSE event without session_id; dropping", self.log_identifier)
             return
-        q = self._sse_queues.setdefault(session_id, asyncio.Queue())
-        await q.put(payload)
+        if not self._http_loop:
+            log.warning("%s SSE event before HTTP loop ready; dropping", self.log_identifier)
+            return
+
+        async def _put_on_http_loop() -> None:
+            q = self._sse_queues.setdefault(session_id, asyncio.Queue())
+            await q.put(payload)
+
+        # Schedule the put on the HTTP loop's thread; don't block SAM's loop on completion.
+        asyncio.run_coroutine_threadsafe(_put_on_http_loop(), self._http_loop)
 
 
 def _serialize_event(obj: Any) -> Any:
