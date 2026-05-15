@@ -1048,15 +1048,89 @@
   }
   document.getElementById("chat-load-history")?.addEventListener("click", loadHistoryForCurrentContext);
 
+  // Pull user-visible text out of an A2A event. Walks status.message.parts
+  // and any Task-level artifacts; ignores non-text parts (DataPart/FilePart
+  // are tool-call internals, not chat content).
+  function extractAgentText(ev) {
+    const data = ev?.data || {};
+    const parts = [];
+    const msgParts = data.status?.message?.parts;
+    if (Array.isArray(msgParts)) parts.push(...msgParts);
+    if (Array.isArray(data.artifacts)) {
+      for (const a of data.artifacts) {
+        if (Array.isArray(a.parts)) parts.push(...a.parts);
+      }
+    }
+    return parts
+      .filter(p => p && (p.kind === "text" || p.type === "text") && (p.text || ""))
+      .map(p => p.text)
+      .join("\n")
+      .trim();
+  }
+
+  // While the agent is "thinking", we paint a single live message bubble and
+  // update its text as each TaskStatusUpdateEvent arrives. When the
+  // FinalResponse lands we finalize it (and persist to localStorage).
+  let pendingAgentMsg = null;     // { el, lastText }
+
+  function startOrUpdateAgentBubble(text) {
+    if (!text) return;
+    chatLog.querySelector(".chat-empty")?.remove();
+    if (!pendingAgentMsg) {
+      const div = document.createElement("div");
+      div.className = "chat-msg agent agent-thinking";
+      div.textContent = text;
+      chatLog.appendChild(div);
+      pendingAgentMsg = { el: div, lastText: text };
+    } else if (text !== pendingAgentMsg.lastText) {
+      pendingAgentMsg.el.textContent = text;
+      pendingAgentMsg.lastText = text;
+    }
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+
+  function finalizeAgentBubble(finalText) {
+    const text = (finalText || pendingAgentMsg?.lastText || "").trim();
+    if (pendingAgentMsg) {
+      pendingAgentMsg.el.classList.remove("agent-thinking");
+      if (text) pendingAgentMsg.el.textContent = text;
+      pendingAgentMsg = null;
+    } else if (text) {
+      // No bubble was opened (no status updates seen) — render the final reply.
+      appendChatMessage("agent", text);
+      return;
+    }
+    // Persist the final text to history (skip if it was already saved
+    // by appendChatMessage above).
+    if (text && chatSessionId) {
+      const log = loadChatHistory(chatSessionId);
+      log.push({ role: "agent", text, ts: Date.now() });
+      saveChatHistory(chatSessionId, log);
+      updateLoadHistoryButton?.();
+    }
+  }
+
   function openSseStream(sessionId) {
     if (chatEventSource) chatEventSource.close();
     chatEventSource = new EventSource(`/api/chat/stream/${encodeURIComponent(sessionId)}`);
     chatEventSource.onmessage = (e) => {
       try {
         const ev = JSON.parse(e.data);
-        if (ev.type === "FinalResponse" || ev.type === "TaskStatusUpdateEvent") {
-          const text = JSON.stringify(ev.data).slice(0, 300);
-          appendChatMessage("agent", text);
+        if (ev.type === "TaskStatusUpdateEvent") {
+          const text = extractAgentText(ev);
+          if (text) startOrUpdateAgentBubble(text);
+        } else if (ev.type === "FinalResponse" || ev.type === "Task") {
+          finalizeAgentBubble(extractAgentText(ev));
+        } else if (ev.type === "Error") {
+          const msg = ev.data?.message || ev.data?.error || "(error)";
+          if (pendingAgentMsg) {
+            pendingAgentMsg.el.classList.remove("agent-thinking");
+            pendingAgentMsg.el.classList.add("agent-error");
+            pendingAgentMsg.el.textContent = `[error] ${msg}`;
+            pendingAgentMsg = null;
+          } else {
+            appendChatMessage("agent", `[error] ${msg}`);
+          }
         }
       } catch (err) { /* ignore malformed */ }
     };

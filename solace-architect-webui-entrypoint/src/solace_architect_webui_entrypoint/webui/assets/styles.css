@@ -333,7 +333,14 @@ body[data-chat="closed"] .chat-panel { display: none; }
   font-size: 13px; line-height: 1.5;
 }
 .chat-msg.user { align-self: flex-end; background: var(--accent); color: var(--primary); }
-.chat-msg.agent { align-self: flex-start; background: var(--bg); border: 1px solid var(--border); color: var(--text); }
+.chat-msg.agent { align-self: flex-start; background: var(--bg); border: 1px solid var(--border); color: var(--text); white-space: pre-wrap; word-wrap: break-word; }
+.chat-msg.agent-thinking { opacity: 0.85; border-color: var(--accent); }
+.chat-msg.agent-thinking::after {
+  content: "▍"; margin-left: 2px; color: var(--accent);
+  animation: chat-cursor 1s steps(1) infinite;
+}
+@keyframes chat-cursor { 50% { opacity: 0; } }
+.chat-msg.agent-error { color: #b00020; border-color: #b00020; }
 
 .chat-form {
   display: flex; flex-direction: column; gap: 8px; padding: 12px;
