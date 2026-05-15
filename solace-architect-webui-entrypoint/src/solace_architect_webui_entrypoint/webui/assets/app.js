@@ -661,40 +661,217 @@
   }
 
   // ============================================================================
-  // Settings page (SPA route /settings)
+  // Settings page (SPA route /settings) — two-pane: inner sidebar + content
   // ============================================================================
+  const SETTINGS_SECTIONS = [
+    { id: "settings", label: "Settings", group: "Sections" },
+    { id: "usage",    label: "Usage",    group: "Sections" },
+  ];
+
+  function _settingsSectionFromHash() {
+    const h = (window.location.hash || "").replace(/^#/, "");
+    return SETTINGS_SECTIONS.find(s => s.id === h)?.id || "settings";
+  }
+
   async function renderSettingsView(root) {
+    const active = _settingsSectionFromHash();
+    root.innerHTML = `
+      <div class="settings-page">
+        <nav class="settings-nav" aria-label="Settings sections">
+          <div class="settings-nav-group">
+            <div class="settings-nav-label">Sections</div>
+            ${SETTINGS_SECTIONS.map(s => `
+              <a class="settings-nav-item ${s.id === active ? "active" : ""}"
+                 href="#${s.id}" data-section="${s.id}">${escapeHtml(s.label)}</a>
+            `).join("")}
+          </div>
+        </nav>
+        <div class="settings-content" id="settings-content"></div>
+      </div>
+    `;
+    const content = root.querySelector("#settings-content");
+    _renderSettingsSection(content, active);
+
+    // Inner-sidebar nav: intercept clicks so we don't reload the page,
+    // update the hash, and re-render the right pane.
+    root.querySelectorAll(".settings-nav-item").forEach(a => {
+      a.addEventListener("click", (e) => {
+        e.preventDefault();
+        const id = a.dataset.section;
+        if (!id) return;
+        history.replaceState({}, "", `/settings#${id}`);
+        root.querySelectorAll(".settings-nav-item").forEach(x =>
+          x.classList.toggle("active", x.dataset.section === id));
+        _renderSettingsSection(content, id);
+      });
+    });
+  }
+
+  function _renderSettingsSection(content, section) {
+    if (section === "usage") return _renderUsageSection(content);
+    return _renderAccountSection(content);
+  }
+
+  function _renderAccountSection(root) {
     const me = currentUser?.user || null;
     const flags = currentUser || {};
     root.innerHTML = `
-      <div class="settings-page">
-        <h1>Settings</h1>
+      <div class="settings-eyebrow">Account</div>
+      <h1>Settings</h1>
 
-        <section class="settings-section">
-          <h2>Account</h2>
-          ${me ? `
-            <div class="settings-flag-row"><span class="flag-name">Username</span><span class="flag-value">${escapeHtml(me.username || me.name)}</span></div>
-            <div class="settings-flag-row"><span class="flag-name">Email</span><span class="flag-value">${escapeHtml(me.email || "—")}</span></div>
-            <div class="settings-flag-row"><span class="flag-name">Role</span><span class="flag-value">${me.is_admin ? "admin" : "user"}</span></div>
-            <p style="margin-top:14px"><button id="open-pw-change" class="modal-btn modal-btn-primary">Change password…</button></p>
-          ` : `<p class="muted">Not signed in.</p>`}
-        </section>
+      <section class="settings-section">
+        <h2>Account</h2>
+        ${me ? `
+          <div class="settings-flag-row"><span class="flag-name">Username</span><span class="flag-value">${escapeHtml(me.username || me.name)}</span></div>
+          <div class="settings-flag-row"><span class="flag-name">Email</span><span class="flag-value">${escapeHtml(me.email || "—")}</span></div>
+          <div class="settings-flag-row"><span class="flag-name">Role</span><span class="flag-value">${me.is_admin ? "admin" : "user"}</span></div>
+          <p style="margin-top:14px"><button id="open-pw-change" class="modal-btn modal-btn-primary">Change password…</button></p>
+        ` : `<p class="muted">Not signed in.</p>`}
+      </section>
 
-        <section class="settings-section">
-          <h2>Server flags</h2>
-          <p class="muted" style="font-size:12px;margin-bottom:8px">Read-only — controlled by environment variables on the server.</p>
-          <div class="settings-flag-row">
-            <span class="flag-name">WEBUI_REQUIRE_AUTH</span>
-            <span class="flag-value ${flags.require_auth ? "on" : "off"}">${flags.require_auth ? "true" : "false"}</span>
-          </div>
-          <div class="settings-flag-row">
-            <span class="flag-name">WEBUI_ENABLE_SIGNUP</span>
-            <span class="flag-value ${flags.enable_signup ? "on" : "off"}">${flags.enable_signup ? "true" : "false"}</span>
-          </div>
-        </section>
-      </div>
+      <section class="settings-section">
+        <h2>Server flags</h2>
+        <p class="muted" style="font-size:12px;margin-bottom:8px">Read-only — controlled by environment variables on the server.</p>
+        <div class="settings-flag-row">
+          <span class="flag-name">WEBUI_REQUIRE_AUTH</span>
+          <span class="flag-value ${flags.require_auth ? "on" : "off"}">${flags.require_auth ? "true" : "false"}</span>
+        </div>
+        <div class="settings-flag-row">
+          <span class="flag-name">WEBUI_ENABLE_SIGNUP</span>
+          <span class="flag-value ${flags.enable_signup ? "on" : "off"}">${flags.enable_signup ? "true" : "false"}</span>
+        </div>
+      </section>
     `;
     root.querySelector("#open-pw-change")?.addEventListener("click", openPasswordChangeModal);
+  }
+
+  // ---- Usage section -------------------------------------------------------
+  // Pulls /api/me/token-usage and renders summary cards + a grouped breakdown.
+
+  const USAGE_RANGES = [
+    { id: "7d",  label: "Last 7 days",  days: 7  },
+    { id: "30d", label: "Last 30 days", days: 30 },
+    { id: "90d", label: "Last 90 days", days: 90 },
+    { id: "all", label: "All time",     days: null },
+  ];
+  const USAGE_GROUPINGS = [
+    { id: "project", label: "Project" },
+    { id: "agent",   label: "Agent" },
+    { id: "model",   label: "Model" },
+    { id: "day",     label: "Day" },
+    { id: "step",    label: "Step" },
+  ];
+  let _usageState = { range: "30d", groupBy: "project" };
+
+  function _renderUsageSection(root) {
+    root.innerHTML = `
+      <div class="settings-eyebrow">Telemetry</div>
+      <h1>Usage</h1>
+      <p class="muted" style="font-size:13px;margin-bottom:4px">
+        LLM token usage across your projects, captured per agent on every model call.
+      </p>
+
+      <div class="usage-controls">
+        <label>Range
+          <select id="usage-range">
+            ${USAGE_RANGES.map(r => `<option value="${r.id}" ${r.id === _usageState.range ? "selected" : ""}>${escapeHtml(r.label)}</option>`).join("")}
+          </select>
+        </label>
+        <label>Group by
+          <select id="usage-group">
+            ${USAGE_GROUPINGS.map(g => `<option value="${g.id}" ${g.id === _usageState.groupBy ? "selected" : ""}>${escapeHtml(g.label)}</option>`).join("")}
+          </select>
+        </label>
+      </div>
+
+      <div id="usage-body"><p class="usage-empty">Loading…</p></div>
+    `;
+    const rangeSel = root.querySelector("#usage-range");
+    const groupSel = root.querySelector("#usage-group");
+    rangeSel.addEventListener("change", () => { _usageState.range = rangeSel.value; _loadUsage(root); });
+    groupSel.addEventListener("change", () => { _usageState.groupBy = groupSel.value; _loadUsage(root); });
+    _loadUsage(root);
+  }
+
+  async function _loadUsage(root) {
+    const body = root.querySelector("#usage-body");
+    const range = USAGE_RANGES.find(r => r.id === _usageState.range) || USAGE_RANGES[1];
+    const since = range.days == null ? null
+      : new Date(Date.now() - range.days * 86400 * 1000).toISOString();
+    const params = new URLSearchParams({ group_by: _usageState.groupBy });
+    if (since) params.set("since", since);
+    try {
+      const r = await fetch(`/api/me/token-usage?${params}`, { headers: { "Accept": "application/json" } });
+      if (!r.ok) {
+        const detail = await r.json().catch(() => ({}));
+        throw new Error(detail.error || `HTTP ${r.status}`);
+      }
+      const data = await r.json();
+      _renderUsageBody(body, data);
+    } catch (err) {
+      body.innerHTML = `<div class="usage-error">Could not load usage — ${escapeHtml(String(err.message || err))}</div>`;
+    }
+  }
+
+  function _formatTokens(n) {
+    if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 1 : 2) + "M";
+    if (n >= 1_000) return (n / 1_000).toFixed(n >= 10_000 ? 0 : 1) + "K";
+    return String(n);
+  }
+
+  function _renderUsageBody(body, data) {
+    const totals = data?.totals || { input_tokens: 0, output_tokens: 0, cached_input_tokens: 0, total_tokens: 0, calls: 0 };
+    const rows = data?.rows || [];
+    const projectCount = data?.project_count ?? null;
+
+    const summaryHtml = `
+      <div class="usage-summary">
+        <div class="usage-card">
+          <div class="label">Total tokens</div>
+          <div class="value">${_formatTokens(totals.total_tokens)}</div>
+          <div class="sub">${totals.calls.toLocaleString()} LLM calls${projectCount !== null ? ` · ${projectCount} project${projectCount === 1 ? "" : "s"}` : ""}</div>
+        </div>
+        <div class="usage-card">
+          <div class="label">Input</div>
+          <div class="value">${_formatTokens(totals.input_tokens)}</div>
+          <div class="sub">${totals.cached_input_tokens > 0 ? `cached ${_formatTokens(totals.cached_input_tokens)}` : "no cached hits"}</div>
+        </div>
+        <div class="usage-card">
+          <div class="label">Output</div>
+          <div class="value">${_formatTokens(totals.output_tokens)}</div>
+          <div class="sub">&nbsp;</div>
+        </div>
+      </div>
+    `;
+
+    if (!rows.length) {
+      body.innerHTML = `
+        ${summaryHtml}
+        <div class="usage-breakdown">
+          <div class="usage-empty">No telemetry recorded yet for the selected range.</div>
+        </div>
+      `;
+      return;
+    }
+
+    const maxTotal = Math.max(1, ...rows.map(r => r.total_tokens));
+    const breakdownHtml = `
+      <div class="usage-breakdown">
+        <h3>By ${escapeHtml(USAGE_GROUPINGS.find(g => g.id === _usageState.groupBy)?.label || _usageState.groupBy)}</h3>
+        ${rows.map(r => {
+          const pct = Math.max(2, Math.round(r.total_tokens / maxTotal * 100));
+          const display = r.label ? r.label : r.key;
+          return `
+            <div class="usage-row">
+              <div class="key" title="${escapeHtml(r.key)}">${escapeHtml(display)}</div>
+              <div class="bar-wrap"><div class="bar" style="width: ${pct}%"></div></div>
+              <div class="total">${_formatTokens(r.total_tokens)}<span class="calls">· ${r.calls}</span></div>
+            </div>
+          `;
+        }).join("")}
+      </div>
+    `;
+    body.innerHTML = summaryHtml + breakdownHtml;
   }
 
   function openPasswordChangeModal() {

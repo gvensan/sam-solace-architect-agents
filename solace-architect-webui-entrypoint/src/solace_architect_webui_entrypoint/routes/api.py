@@ -11,10 +11,26 @@ from __future__ import annotations
 
 from typing import Any
 
+from datetime import datetime, timezone
+
 from solace_architect_core.tools import (
     artifact_tools, decision_tools, project_tools,
     dashboard_tools, intake_tools, blueprint_tools,
+    telemetry_tools,
 )
+
+
+_VALID_GROUP_BY_ENGAGEMENT = {"agent", "step", "model", "day"}
+_VALID_GROUP_BY_USER = {"agent", "step", "model", "day", "project"}
+
+
+def _parse_iso(ts: str | None) -> datetime | None:
+    if not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
 
 
 # ----- Project lifecycle -----
@@ -238,6 +254,33 @@ async def exports_zip(engagement_id: str) -> Any:
 
 # ----- Feedback -----
 
+async def engagement_token_usage(engagement_id: str, group_by: str = "agent",
+                                  since: str | None = None, until: str | None = None) -> Any:
+    """Per-engagement token telemetry, grouped + filtered."""
+    if group_by not in _VALID_GROUP_BY_ENGAGEMENT:
+        return {"error": f"invalid group_by; expected one of {sorted(_VALID_GROUP_BY_ENGAGEMENT)}"}
+    r = await telemetry_tools.read_token_usage(
+        engagement_id,
+        group_by=group_by,  # type: ignore[arg-type]
+        since=_parse_iso(since),
+        until=_parse_iso(until),
+    )
+    return r.data if r.ok else {"error": r.error}
+
+
+async def user_token_usage(group_by: str = "project",
+                            since: str | None = None, until: str | None = None) -> Any:
+    """Cross-engagement token telemetry for the current user."""
+    if group_by not in _VALID_GROUP_BY_USER:
+        return {"error": f"invalid group_by; expected one of {sorted(_VALID_GROUP_BY_USER)}"}
+    r = await telemetry_tools.read_user_token_usage(
+        group_by=group_by,  # type: ignore[arg-type]
+        since=_parse_iso(since),
+        until=_parse_iso(until),
+    )
+    return r.data if r.ok else {"error": r.error}
+
+
 async def submit_feedback(engagement_id: str, scope: str, rating: int,
                           category: str, note: str) -> Any:
     return (await decision_tools.record_feedback(
@@ -277,4 +320,7 @@ API_ROUTES = [
     ("GET",  "/api/engagements/{engagement_id}/exports/zip",  exports_zip),
     # Feedback
     ("POST", "/api/engagements/{engagement_id}/feedback",     submit_feedback),
+    # Token telemetry (Decision 84)
+    ("GET",  "/api/engagements/{engagement_id}/token-usage",  engagement_token_usage),
+    ("GET",  "/api/me/token-usage",                           user_token_usage),
 ]

@@ -20,9 +20,15 @@ shared_config:
       temporary_queue: ${USE_TEMPORARY_QUEUES, true}
 
   - services:
+      # Single storage root for everything Solace Architect writes:
+      #   - SAM's filesystem artifact_service (FilePart bytes, agent-produced files)
+      #   - solace-architect-core's project/intake/decisions YAML
+      # When SA_STORAGE_ROOT is unset, the entrypoint sets it (process-wide) to
+      # this base_path at startup so the core library and the artifact service
+      # never diverge.
       artifact_service: &default_artifact_service
         type: "filesystem"
-        base_path: ${SA_STORAGE_ROOT, /tmp/sam-solace-architect}
+        base_path: ${SA_STORAGE_ROOT, /tmp/sa-artifacts}
         artifact_scope: namespace
 
 apps:

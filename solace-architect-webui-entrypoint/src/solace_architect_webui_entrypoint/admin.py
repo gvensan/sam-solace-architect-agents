@@ -23,7 +23,7 @@ from .auth.passwords import hash_password, validate_password_strength
 
 
 def _db_path() -> Path:
-    storage_root = Path(os.environ.get("SA_STORAGE_ROOT", "/tmp/sam-solace-architect"))
+    storage_root = Path(os.environ.get("SA_STORAGE_ROOT", "/tmp/sa-artifacts"))
     return Path(os.environ.get("WEBUI_USERS_DB", str(storage_root / "__system__" / "users.db")))
 
 

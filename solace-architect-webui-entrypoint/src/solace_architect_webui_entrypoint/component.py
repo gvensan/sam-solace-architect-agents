@@ -80,10 +80,23 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         self._host: str = ac.get("host", "0.0.0.0")
         self._show_status_updates: bool = bool(ac.get("show_status_updates", True))
 
+        # Anchor SA's storage to SAM's artifact_service.base_path when SA_STORAGE_ROOT
+        # isn't explicitly set. Without this, solace-architect-core falls back to a
+        # cwd-relative "./sa-artifacts" and SAM's artifact service falls back to
+        # "/tmp/sa-artifacts" — two different places for what should be the same
+        # data. Setting the env var here (process-wide) means any SA agent plugin
+        # running in the same SAM process inherits the same root.
+        artifact_cfg = self.get_config("artifact_service") or {}
+        artifact_base = artifact_cfg.get("base_path") or ""
+        if artifact_base and not os.environ.get("SA_STORAGE_ROOT"):
+            os.environ["SA_STORAGE_ROOT"] = str(artifact_base)
+            log.info("%s SA_STORAGE_ROOT defaulted to artifact_service.base_path=%s",
+                     self.log_identifier, artifact_base)
+
         # Auth state — local SQLite user DB.
         # DB path is configurable via WEBUI_USERS_DB env var; defaults under
         # SA_STORAGE_ROOT/__system__/users.db.
-        storage_root = Path(os.environ.get("SA_STORAGE_ROOT", "/tmp/sam-solace-architect"))
+        storage_root = Path(os.environ.get("SA_STORAGE_ROOT", "/tmp/sa-artifacts"))
         default_db = storage_root / "__system__" / "users.db"
         db_path = Path(os.environ.get("WEBUI_USERS_DB", str(default_db)))
 
@@ -157,6 +170,22 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                 self._http_loop = loop
 
                 self._app = web.Application()
+
+                # Static-asset no-cache during dev iteration. Static handlers
+                # don't set Cache-Control by default, so browsers heuristic-cache
+                # the JS/CSS aggressively and edits don't show up without a hard
+                # reload. Sending no-cache on /assets/* + the index/intake HTML
+                # avoids that. Once we ship fingerprinted assets we can drop this.
+                @web.middleware
+                async def _no_cache_static(request, handler):
+                    response = await handler(request)
+                    path = request.path
+                    if path.startswith("/assets/") or path in {"/", "/settings"} or path.startswith("/intake"):
+                        response.headers.setdefault("Cache-Control", "no-cache, must-revalidate")
+                    return response
+
+                self._app.middlewares.append(_no_cache_static)
+
                 # Auth: middleware FIRST (applies to every request), then auth routes.
                 install_middleware(self._app, self._auth_state)
                 add_auth_routes(self._app, self._auth_state)

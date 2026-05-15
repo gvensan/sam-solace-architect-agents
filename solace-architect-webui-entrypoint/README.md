@@ -93,7 +93,7 @@ Add to `.env` in the SAM project root (the directory you run `sam run` from):
 | `WEBUI_BRANDING_OVERRIDES` | *(blank)* | Optional path to a branding YAML overlay; defaults to `solace_architect_core`'s bundled `branding.yaml`. |
 | `AUTH_TYPE` | `none` | `none` = local user/password (the Phase 1 default). `oidc` is reserved for Phase 2 (not yet wired). |
 | `OIDC_ISSUER`, `OIDC_CLIENT_ID` | — | Only when `AUTH_TYPE=oidc` (Phase 2, future). |
-| `SA_STORAGE_ROOT` | `/tmp/sam-solace-architect` | Where engagement artifacts and per-user namespaces are persisted. |
+| `SA_STORAGE_ROOT` | `/tmp/sa-artifacts` | Where engagement artifacts and per-user namespaces are persisted. When unset, the entrypoint defaults this env var to `artifact_service.base_path` from `config.yaml` at startup — so SA's own state (projects.yaml, intake.json, decisions, brief) and SAM's filesystem artifact service share one root. Set explicitly to override both. |
 | `LOG_LEVEL` | `INFO` | `DEBUG`/`INFO`/`WARNING`/`ERROR`. |
 
 > **No broker admin permissions needed.** Solace Architect plugins do messaging only — they never create VPNs, queues, or ACL profiles via SEMP. Broker-admin operations stay in your IaC + Mission Control workflow.
