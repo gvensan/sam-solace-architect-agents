@@ -265,6 +265,13 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         the user's text, the active engagement_id, and the SSE session_id.
         """
         text = (external_event.get("text") or "").strip()
+        # Inject the active engagement_id into the agent's input so its tools
+        # (read_artifact, record_open_item, …) have something to scope to.
+        # request_context carries this for callback routing only — it doesn't
+        # reach the agent prompt.
+        eid = external_event.get("engagement_id")
+        if eid:
+            text = f"[Active engagement: engagement_id={eid}]\n\n{text}" if text else f"[Active engagement: engagement_id={eid}]"
         parts: List[A2APart] = []
         if text:
             parts.append(TextPart(text=text))

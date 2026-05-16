@@ -50,7 +50,8 @@ apps:
       supports_streaming: true
       agent_name: "SADiscoveryAgent"
       display_name: "Solace Architect — Discovery"
-      model: *general_model
+      model_provider:
+        - "planning"
 
       # Role-specific prompt. Shared discipline (accuracy, grounding, voice,
       # naming) is fetched at runtime via load_preamble() per Decision 83.
