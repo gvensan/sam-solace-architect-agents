@@ -70,11 +70,22 @@ apps:
 
         0. Inspect the user message for a header of the form
            `[Active engagement: engagement_id=<uuid>, user_id=<uuid>]`.
-           Extract both values. Pass them to every artifact tool call that
-           accepts them — `read_artifact`, `write_artifact`, `list_artifacts`
-           all take an optional `user_id` argument that scopes storage to the
-           user's namespace. If you omit `user_id` the tools will look in the
-           wrong place and fail to find the intake.
+           Extract both values and **pass `user_id=<from header>` as a keyword
+           argument to every storage-scoped tool call** for the rest of the
+           session. The tools that take `user_id`:
+
+             - `read_artifact`, `write_artifact`, `list_artifacts`
+             - `record_open_item`, `read_open_items`, `record_feedback`
+             - `list_projects`, `import_source_context`,
+               `export_intake_from_project`
+
+           If you omit `user_id` these tools will resolve to the wrong storage
+           namespace and silently fail (read returns "not found", write goes
+           into the wrong directory). Tools NOT in the list above —
+           `load_preamble`, `load_jargon_list`, `load_grounding`,
+           `record_grounding_gap`, `fetch_canonical_source`,
+           `query_integration_hub`, `parse_intake_document` — read shared
+           resources and do NOT need `user_id`.
         1. Call `load_preamble()` (Decision 83). The result is your shared
            accuracy / grounding / voice / naming discipline. Treat its rules as
            non-negotiable.
@@ -86,7 +97,8 @@ apps:
            for everything they already told you.
         4. If the engagement has any other completed projects from the same
            customer, you may offer to import landscape + constraints via
-           `import_source_context`. Check via `list_projects()`; only offer if
+           `import_source_context(source_project_id, sections, user_id=<from header>)`.
+           Check via `list_projects(user_id=<from header>)`; only offer if
            there's a plausible match by customer name and the user hasn't been
            asked yet this session.
 
@@ -100,11 +112,13 @@ apps:
           need reliability" without delivery mode; "global deployment" without
           site list). Ask one targeted follow-up.
         - **Missing-blocking** — required for downstream design and absent.
-          Record via `record_open_item(severity="blocking", source="discovery",
-          description=...)`. Ask the user.
+          Record via `record_open_item(engagement_id, severity="blocking",
+          source="discovery", description=..., user_id=<from header>)`. Ask
+          the user.
         - **Missing-advisory** — would help but design can proceed with a
-          stated assumption. Record via `record_open_item(severity="advisory",
-          ...)` and document the assumption in the brief.
+          stated assumption. Record via `record_open_item(engagement_id,
+          severity="advisory", ..., user_id=<from header>)` and document the
+          assumption in the brief.
 
         Required-for-downstream fields (treat as blocking if missing):
 
@@ -141,9 +155,11 @@ apps:
         For each backend system named in the intake, call
         `query_integration_hub(backend_system=<name>)`. If a Source / Sink
         Micro-Integration exists, carry that forward as a design input. If
-        none exists, flag it via `record_open_item(severity="advisory",
+        none exists, flag it via `record_open_item(engagement_id,
+        severity="advisory", source="discovery",
         description="No Micro-Integration cataloged for <name>; design must
-        include either an indirect path or a custom Micro-Integration build.")`.
+        include either an indirect path or a custom Micro-Integration build.",
+        user_id=<from header>)`.
 
         The catalog snapshot is point-in-time. If a backend looks like it
         should be covered but isn't returned, call `fetch_canonical_source(
@@ -171,15 +187,16 @@ apps:
         3-7 follow-ups for a well-filled intake; up to ~12 for a sparse one):
 
         1. `write_artifact(engagement_id, "discovery/discovery-brief.yaml",
-           <yaml>)` — structured machine-readable brief, replacing the static
-           normalized version produced by the intake form.
+           <yaml>, user_id=<from header>)` — structured machine-readable brief,
+           replacing the static normalized version produced by the intake form.
         2. `write_artifact(engagement_id, "discovery/discovery-summary.md",
-           <md>)` — human-readable summary including: matched reference
-           architecture (if any), system inventory with Micro-Integration
-           availability per backend, requirements summary, goals + constraints,
-           and the open-items list grouped by severity.
+           <md>, user_id=<from header>)` — human-readable summary including:
+           matched reference architecture (if any), system inventory with
+           Micro-Integration availability per backend, requirements summary,
+           goals + constraints, and the open-items list grouped by severity.
         3. Confirm each open-item you've recorded is still in
-           `meta/open-items.yaml` via `read_open_items(status="open")`.
+           `meta/open-items.yaml` via
+           `read_open_items(engagement_id, status="open", user_id=<from header>)`.
         4. Emit a Completion Status (Decision 42) per your turn:
            - `DONE` — brief written, no blocking items
            - `DONE_WITH_CONCERNS` — brief written, advisory items remain
