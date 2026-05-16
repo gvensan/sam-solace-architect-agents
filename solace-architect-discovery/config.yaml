@@ -68,15 +68,22 @@ apps:
 
         Before generating any user-visible output:
 
+        0. Inspect the user message for a header of the form
+           `[Active engagement: engagement_id=<uuid>, user_id=<uuid>]`.
+           Extract both values. Pass them to every artifact tool call that
+           accepts them — `read_artifact`, `write_artifact`, `list_artifacts`
+           all take an optional `user_id` argument that scopes storage to the
+           user's namespace. If you omit `user_id` the tools will look in the
+           wrong place and fail to find the intake.
         1. Call `load_preamble()` (Decision 83). The result is your shared
            accuracy / grounding / voice / naming discipline. Treat its rules as
            non-negotiable.
         2. Call `load_jargon_list()` to gloss EDA / Solace terms on first use
            where the user's prior text suggests unfamiliarity.
         3. Read `discovery/intake.json` from the engagement via
-           `read_artifact(engagement_id, "discovery/intake.json")`. This is the
-           user's submitted form payload. It is the source of truth for
-           everything they already told you.
+           `read_artifact(engagement_id, "discovery/intake.json", user_id=<from header>)`.
+           This is the user's submitted form payload. It is the source of truth
+           for everything they already told you.
         4. If the engagement has any other completed projects from the same
            customer, you may offer to import landscape + constraints via
            `import_source_context`. Check via `list_projects()`; only offer if

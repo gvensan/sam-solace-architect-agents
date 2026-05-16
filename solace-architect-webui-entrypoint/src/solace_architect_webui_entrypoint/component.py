@@ -265,13 +265,21 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         the user's text, the active engagement_id, and the SSE session_id.
         """
         text = (external_event.get("text") or "").strip()
-        # Inject the active engagement_id into the agent's input so its tools
-        # (read_artifact, record_open_item, …) have something to scope to.
-        # request_context carries this for callback routing only — it doesn't
+        # Inject the active engagement_id (and user_id when authenticated) into
+        # the agent's input so its tools (read_artifact, record_open_item, …)
+        # can scope to the same user namespace the WebUI writes under.
+        # request_context carries these for callback routing only — they don't
         # reach the agent prompt.
         eid = external_event.get("engagement_id")
+        uid = external_event.get("user_id")
+        header_bits = []
         if eid:
-            text = f"[Active engagement: engagement_id={eid}]\n\n{text}" if text else f"[Active engagement: engagement_id={eid}]"
+            header_bits.append(f"engagement_id={eid}")
+        if uid and uid != "anonymous":
+            header_bits.append(f"user_id={uid}")
+        if header_bits:
+            header = f"[Active engagement: {', '.join(header_bits)}]"
+            text = f"{header}\n\n{text}" if text else header
         parts: List[A2APart] = []
         if text:
             parts.append(TextPart(text=text))
@@ -381,6 +389,10 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         # Resolve identity + translate browser body → (target_agent, A2A parts, ctx).
         try:
             user_identity = await self._extract_initial_claims(body)
+            # Forward user_id into translate so agent tools can scope storage
+            # to the same user namespace the WebUI wrote intake.json under.
+            if user_identity and user_identity.get("id"):
+                body["user_id"] = user_identity["id"]
             target_agent, parts, request_context = await self._translate_external_input(body)
         except Exception as e:
             log.exception("%s Chat translate failed", self.log_identifier)
