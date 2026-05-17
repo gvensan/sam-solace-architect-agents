@@ -1579,70 +1579,59 @@
 
     card.appendChild(form);
 
-    // "…or type a custom answer" escape hatch — collapses the form,
-    // re-enables the chat input for free-text reply. The chatForm
-    // submit handler picks up `pendingDeferredQuestion` and attaches
-    // the question_id to the outgoing message so the agent knows which
-    // question the free-text answer refers to.
-    //
-    // Skip for free_text: the textarea IS already a free-text input,
-    // so adding a "type a custom answer" link is redundant and confusing.
-    if (schema.allow_custom !== false && schema.kind !== "free_text") {
-      const custom = document.createElement("button");
-      custom.type = "button";
-      custom.className = "question-custom-link";
-      custom.textContent = "…or type a custom answer";
-      custom.addEventListener("click", () => {
-        card.classList.add("question-deferred");
-        Array.from(card.querySelectorAll("input, button, textarea")).forEach(el => el.disabled = true);
-        pendingDeferredQuestion = { id: schema.id, kind: schema.kind, cardEl: card };
-        chatInput?.focus();
-        if (chatInput) chatInput.placeholder = `Custom reply to "${schema.id}"…`;
-      });
-      card.appendChild(custom);
-    }
+    // No "type a custom answer" escape hatch — "+ Add a note" already
+    // covers the elaboration case (pick the closest option + qualify
+    // it), and the chat input below is always available for truly
+    // off-script replies. The link was a footgun (no undo on a stray
+    // click) and added a redundant code path.
 
     return card;
   }
 
-  // Set when the user clicks "…or type a custom answer" on a form
-  // card. The next chatForm submit attaches this as DataPart so the
-  // agent receives the free-text answer correlated to the right
-  // question. Cleared after one submission.
-  let pendingDeferredQuestion = null;
-
-  // Detect a "Reply: A, B, C" / "Reply: A, B, or C" / "Reply: yes or no"
-  // footer in an agent markdown message. Returns either an array of
-  // letter labels (single_choice) or {kind:"yes_no"}, or null if no
-  // such pattern is found.
+  // Detect a "Reply: A, B, C" / "Please reply: A, B, or C" / etc footer
+  // in an agent markdown message. Returns either an array of letter
+  // labels (single_choice) or {kind:"yes_no"}, or null if no such
+  // pattern is found.
   //
   // Why: SADiscoveryAgent sometimes emits a structured question as
   // markdown instead of calling ask_user_question. The chip row gives
   // users a click-not-type affordance regardless of which path the LLM
   // chose.
   function detectReplyPattern(text) {
-    // Match the closing instruction. Looks for:
-    //   **Reply:** A, B, C — or describe...
-    //   Reply: A, B, or C
-    //   (Reply: A/B/C — or describe...)
-    //   Reply: yes or no
-    const re = /(?:^|\n)[*_(]*Reply[*_:\s]*\s*[*_:]?\s*([A-Za-z][A-Za-z\s,/]*?[A-Za-z])(?:\s*[—\-–]|\s*\(|\s*$)/im;
-    const m = text.match(re);
-    if (!m) return null;
+    // Look only at the tail of the message — the "Reply:" prompt is
+    // always near the end. Limits false positives where the body
+    // happens to mention "reply" in unrelated context.
+    const tail = text.slice(-500);
 
-    const raw = m[1].trim();
-    const lower = raw.toLowerCase();
+    // Word "reply" anywhere (case-insensitive, word-bounded — catches
+    // "Reply:", "Please reply:", "**Reply:**", "(Reply A/B/C)", etc.)
+    // followed (within the same sentence) by a list of single
+    // uppercase letters or yes/no tokens.
+    const replyRe = /\b[Rr]eply\b[^.!?\n]{0,80}/g;
+    const yesNoRe = /\byes\b[^.!?\n]{0,40}\bno\b|\bno\b[^.!?\n]{0,40}\byes\b/i;
+    // letter list — 2-6 single-cap letters separated by , / or whitespace
+    const letterListRe = /\b([A-Z])(?:[\s,/]+(?:or\s+)?([A-Z]))(?:[\s,/]+(?:or\s+)?([A-Z]))?(?:[\s,/]+(?:or\s+)?([A-Z]))?(?:[\s,/]+(?:or\s+)?([A-Z]))?(?:[\s,/]+(?:or\s+)?([A-Z]))?\b/;
 
-    // yes/no detection
-    if (/\byes\b/.test(lower) && /\bno\b/.test(lower)) {
-      return { kind: "yes_no" };
-    }
+    let match;
+    while ((match = replyRe.exec(tail)) !== null) {
+      const span = match[0];
 
-    // Letter list — split on comma / slash / "or" and keep single uppercase letters
-    const tokens = raw.split(/[,/]|\bor\b/i).map(t => t.trim()).filter(Boolean);
-    const letters = tokens.filter(t => /^[A-Z]$/.test(t));
-    if (letters.length >= 2 && letters.length <= 6) {
-      return { kind: "single_choice", letters };
+      // yes/no test inside the span
+      if (yesNoRe.test(span)) {
+        return { kind: "yes_no" };
+      }
+
+      // letter list inside the span
+      const ll = span.match(letterListRe);
+      if (ll) {
+        const letters = ll.slice(1).filter(Boolean);
+        // De-dup while preserving order
+        const seen = new Set();
+        const unique = letters.filter(l => (seen.has(l) ? false : (seen.add(l), true)));
+        if (unique.length >= 2 && unique.length <= 6) {
+          return { kind: "single_choice", letters: unique };
+        }
+      }
     }
     return null;
   }
@@ -1907,18 +1896,6 @@
     const body = { text, session_id: chatSessionId };
     if (agent) body.agent = agent;
     if (eid) body.engagement_id = eid;
-    // If the user deferred a question via "…type a custom answer", tag
-    // this message so the agent can correlate the free-text reply to
-    // the question that asked it.
-    if (pendingDeferredQuestion) {
-      body.data = {
-        question_id: pendingDeferredQuestion.id,
-        kind: pendingDeferredQuestion.kind,
-        answer: { text, custom: true },
-      };
-      pendingDeferredQuestion = null;
-      if (chatInput) chatInput.placeholder = "";
-    }
 
     try {
       await fetch("/api/chat/message", {

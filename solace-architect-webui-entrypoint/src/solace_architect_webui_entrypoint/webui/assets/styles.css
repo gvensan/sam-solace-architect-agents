@@ -391,7 +391,6 @@ body[data-chat="closed"] .chat-panel { display: none; }
 .chat-msg.question-card.severity-advisory { border-left-color: #b58900; }
 .chat-msg.question-card.severity-info     { border-left-color: var(--accent); }
 .chat-msg.question-card.question-answered { opacity: 0.6; }
-.chat-msg.question-card.question-deferred { opacity: 0.55; font-style: italic; }
 .question-header { display: flex; gap: 8px; align-items: center; font-size: 11px; }
 .question-badge {
   padding: 2px 6px; border-radius: 3px;
@@ -439,12 +438,6 @@ body[data-chat="closed"] .chat-panel { display: none; }
 }
 .question-submit-row { display: flex; justify-content: flex-end; }
 .question-submit { font-size: 13px; padding: 6px 14px; }
-.question-custom-link {
-  background: none; border: none; padding: 0; cursor: pointer;
-  font-size: 11px; color: var(--accent); font-family: inherit;
-  text-align: left; text-decoration: underline;
-}
-.question-custom-link:disabled { color: var(--muted, #888); cursor: not-allowed; text-decoration: none; }
 
 /* "+ Add a note" — collapsed-by-default optional caveat input.
    Always present on single_choice / yes_no / multi_choice cards. */
