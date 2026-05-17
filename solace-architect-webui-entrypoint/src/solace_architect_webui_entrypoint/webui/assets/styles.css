@@ -750,6 +750,52 @@ pre {
 .discovery-cta.in-progress { border-color: var(--accent); background: linear-gradient(to right, rgba(0,0,0,0.02), transparent); }
 .discovery-cta.in-progress .discovery-cta-eyebrow { color: var(--accent); }
 
+/* Progress-page contextual CTA — re-uses discovery-cta layout but is
+   always present (not just for the un-started case) and supports
+   multiple variants and action buttons. */
+.progress-cta {
+  display: flex; align-items: center; justify-content: space-between; gap: 24px;
+  margin: 16px 0 20px; padding: 18px 22px;
+  background: linear-gradient(135deg, rgba(0,200,149,0.08), rgba(9,59,95,0.04));
+  border: 1px solid var(--accent); border-radius: 10px;
+}
+.progress-cta-body { flex: 1; min-width: 0; }
+.progress-cta-eyebrow {
+  font-family: 'Space Mono', monospace; font-size: 11px;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent);
+}
+.progress-cta h2 { margin: 4px 0 6px; color: var(--primary); font-size: 18px; }
+.progress-cta p { color: var(--muted); font-size: 13px; line-height: 1.5; max-width: 70ch; margin: 0 0 4px; }
+.progress-cta-actions { flex-shrink: 0; }
+.progress-cta-actions-row { display: flex; gap: 8px; }
+.progress-cta-actions .cta-btn { font-size: 14px; padding: 8px 14px; cursor: pointer; }
+.progress-cta-actions .cta-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.progress-cta.in-progress { background: linear-gradient(to right, rgba(0,0,0,0.02), transparent); }
+.progress-cta.done {
+  background: linear-gradient(135deg, rgba(0,150,80,0.08), rgba(0,0,0,0.02));
+  border-color: var(--accent);
+}
+.cta-btn-secondary {
+  background: var(--bg); color: var(--primary); border: 1px solid var(--border);
+}
+.cta-btn-secondary:hover { background: rgba(0,0,0,0.04); }
+.cta-btn-danger {
+  background: var(--bg); color: #b00020; border: 1px solid #b00020;
+}
+.cta-btn-danger:hover { background: #b00020; color: white; }
+.status-badge {
+  display: inline-block; margin-left: 6px;
+  padding: 2px 8px; border-radius: 3px;
+  font-family: 'Space Mono', monospace; font-size: 10px;
+  font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+  vertical-align: middle;
+}
+.status-badge.done { background: var(--accent); color: var(--primary); }
+.status-badge.advisory { background: #b58900; color: white; }
+.modal-section h2 { margin: 0 0 8px; font-size: 18px; }
+.modal-section p { color: var(--text); font-size: 13px; line-height: 1.5; margin: 6px 0; }
+.modal-section code { background: rgba(0,0,0,0.06); padding: 1px 6px; border-radius: 3px; font-family: 'Space Mono', monospace; font-size: 12px; }
+
 /* Per-step progress banner shown above the stat tiles on the Progress
    view. Visual states: pending = muted, done = check-tint, active =
    accent border + light fill. */

@@ -368,52 +368,53 @@
   const VIEWS = {
     overview: async (root, eid) => {
       try {
-        const [stats, intakeRes, artifacts] = await Promise.all([
+        const [stats, intakeRes, artifacts, lifecycle] = await Promise.all([
           fetch(`/api/engagements/${encodeURIComponent(eid)}/overview`).then(r => r.json()),
           fetch(`/api/intake/load/${encodeURIComponent(eid)}`).then(r => r.json()),
           fetch(`/api/engagements/${encodeURIComponent(eid)}/artifacts`).then(r => r.json()).catch(() => []),
+          fetch(`/api/engagements/${encodeURIComponent(eid)}/lifecycle`).then(r => r.json()).catch(() => ({ steps: {} })),
         ]);
         const intake = (intakeRes && intakeRes.intake) || {};
         const activeProject = projects.find(p => p.id === eid);
         const statusValue = activeProject?.status || "active";
         const hasIntake = artifacts.some(a => a === "discovery/intake.json");
-        const hasDiscovery = artifacts.some(a => a === "discovery/discovery-summary.md");
-        // Discovery is "in progress" if the agent has recorded any
-        // open-items or written a partial discovery-brief.yaml. We don't
-        // want users clicking "Start Discovery" a second time mid-flow.
         const hasDiscoveryBrief = artifacts.some(a => a === "discovery/discovery-brief.yaml");
+        const hasDiscoverySummary = artifacts.some(a => a === "discovery/discovery-summary.md");
         const openItemsCount = (stats.open_items_blocking || 0) + (stats.open_items_advisory || 0);
-        const discoveryInProgress = !hasDiscovery && (hasDiscoveryBrief || openItemsCount > 0);
-        const discoveryCta = (hasIntake && !hasDiscovery)
-          ? renderDiscoveryCta(eid, { inProgress: discoveryInProgress })
-          : "";
-        // Determine the active step from artifact state. Per-step
-        // banners highlight where the engagement is in the lifecycle.
-        const activeStepId = hasDiscovery ? "design"
-          : discoveryInProgress ? "discovery"
-          : hasIntake ? "discovery"
+
+        // Authoritative source: meta/engagement-status.yaml written by the
+        // agent at end-of-turn (set_step_status). File-existence alone is
+        // too fragile — an empty summary made Discovery look done when the
+        // brief was unusable.
+        const discoveryStatus = lifecycle?.steps?.discovery?.status || "NOT_STARTED";
+        const discoveryNote = lifecycle?.steps?.discovery?.note || "";
+        const discoveryDone = discoveryStatus === "DONE" || discoveryStatus === "DONE_WITH_CONCERNS";
+        const discoveryInProgress = !discoveryDone && (hasDiscoveryBrief || openItemsCount > 0 || hasDiscoverySummary);
+
+        // Active step on the lifecycle banner.
+        const activeStepId = discoveryDone ? "design"
+          : (discoveryInProgress || hasIntake) ? "discovery"
           : "intake";
         const completedSteps = new Set();
         if (hasIntake) completedSteps.add("intake");
-        if (hasDiscovery) completedSteps.add("discovery");
+        if (discoveryDone) completedSteps.add("discovery");
+
+        // One contextual CTA, always shown — content depends on lifecycle state.
+        const cta = renderProgressCta({
+          eid, hasIntake, discoveryStatus, discoveryNote,
+          discoveryInProgress, openItemsCount,
+        });
 
         root.innerHTML = `
           <h1>Progress</h1>
           ${renderProgressBanner({ active: activeStepId, completed: completedSteps })}
-          ${discoveryCta}
+          ${cta}
 
           <!-- Compact engagement-state tiles. Status is the first tile (Progress only);
                Activities lives on Decisions. -->
           ${renderHeroTiles(stats, { statusValue, includeActivities: false })}
         `;
-        root.querySelector("#start-discovery-btn")?.addEventListener("click", () => {
-          applyChat("open");
-          const ci = document.getElementById("chat-input");
-          if (ci) {
-            ci.value = "Let's start discovery — please review the intake and ask your first follow-up.";
-            ci.focus();
-          }
-        });
+        wireProgressCtaActions(root, eid);
       } catch (e) {
         root.innerHTML = `<div class="welcome"><h1>Overview unavailable</h1><p>${escapeHtml(e.message || e)}</p></div>`;
       }
@@ -592,42 +593,156 @@
       </div>`;
   }
 
-  // Discovery CTA shown on Overview when intake.json exists but Discovery
-  // hasn't produced its summary yet. One-click opens chat with a primed
-  // message — the agent then reads intake.json and asks its first follow-up.
+  // One contextual CTA on the Progress page, always present, tells the
+  // user what to do next based on lifecycle state. Resolves the previous
+  // confusion ("I see the banner but what should I do") by giving a
+  // single primary action keyed to the current step + status.
   //
-  // When discovery is already mid-flow (open-items recorded, or a partial
-  // discovery-brief.yaml exists), the button is disabled and the headline
-  // shifts so the user knows to continue in chat rather than start over.
-  function renderDiscoveryCta(eid, { inProgress = false } = {}) {
-    if (inProgress) {
+  // States covered:
+  //   - no intake             → link to /intake (defensive — overview only
+  //                              renders for projects with intake)
+  //   - intake, not started   → Start Discovery (primes chat)
+  //   - in progress           → Continue in chat (status, opens panel)
+  //   - DONE / DONE_WITH_CONCERNS → View brief + Restart Discovery
+  function renderProgressCta({
+    eid, hasIntake, discoveryStatus, discoveryNote, discoveryInProgress, openItemsCount,
+  }) {
+    if (!hasIntake) {
       return `
-        <div class="discovery-cta in-progress" role="region" aria-label="Discovery in progress">
-          <div class="discovery-cta-body">
-            <div class="discovery-cta-eyebrow">In progress</div>
-            <h2>Discovery is in progress</h2>
-            <p>SADiscoveryAgent is currently working through the gaps in your intake.
-            Continue the conversation in chat — the brief will appear here once the agent
-            finishes its first pass.</p>
+        <div class="progress-cta" role="region" aria-label="Intake required">
+          <div class="progress-cta-body">
+            <div class="progress-cta-eyebrow">Get started</div>
+            <h2>Submit your intake</h2>
+            <p>Discovery can't run without an intake form. Tell us what you're building
+            and we'll start asking the right follow-ups.</p>
           </div>
-          <div class="discovery-cta-actions">
-            <button class="cta-btn" disabled aria-disabled="true">Discovery in progress…</button>
+          <div class="progress-cta-actions">
+            <a class="cta-btn" href="/intake/edit/${encodeURIComponent(eid)}">Open intake form →</a>
           </div>
         </div>`;
     }
+
+    const done = discoveryStatus === "DONE" || discoveryStatus === "DONE_WITH_CONCERNS";
+
+    if (done) {
+      const badge = discoveryStatus === "DONE_WITH_CONCERNS"
+        ? `<span class="status-badge advisory">Done with concerns</span>`
+        : `<span class="status-badge done">Done</span>`;
+      return `
+        <div class="progress-cta done" role="region" aria-label="Discovery complete">
+          <div class="progress-cta-body">
+            <div class="progress-cta-eyebrow">Discovery</div>
+            <h2>Discovery is complete ${badge}</h2>
+            ${discoveryNote ? `<p>${escapeHtml(discoveryNote)}</p>` : ""}
+            <p>You can review the brief on the Artifacts tab, or restart Discovery
+            from scratch if you want to re-run the questions with different inputs.</p>
+          </div>
+          <div class="progress-cta-actions progress-cta-actions-row">
+            <a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View brief →</a>
+            <button id="restart-discovery-btn" class="cta-btn cta-btn-danger">Restart Discovery…</button>
+          </div>
+        </div>`;
+    }
+
+    if (discoveryInProgress) {
+      return `
+        <div class="progress-cta in-progress" role="region" aria-label="Discovery in progress">
+          <div class="progress-cta-body">
+            <div class="progress-cta-eyebrow">Discovery in progress</div>
+            <h2>Continue in chat</h2>
+            <p>SADiscoveryAgent is working through the gaps in your intake.
+            ${openItemsCount ? `<strong>${openItemsCount}</strong> open item${openItemsCount === 1 ? "" : "s"} recorded so far. ` : ""}
+            Open the chat panel to answer the next question — the brief appears
+            here once the agent finishes its pass.</p>
+          </div>
+          <div class="progress-cta-actions progress-cta-actions-row">
+            <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
+            <button id="restart-discovery-btn" class="cta-btn cta-btn-danger">Restart Discovery…</button>
+          </div>
+        </div>`;
+    }
+
+    // Intake exists, discovery hasn't started.
     return `
-      <div class="discovery-cta" role="region" aria-label="Discovery not yet run">
-        <div class="discovery-cta-body">
-          <div class="discovery-cta-eyebrow">Next step</div>
+      <div class="progress-cta" role="region" aria-label="Discovery not yet run">
+        <div class="progress-cta-body">
+          <div class="progress-cta-eyebrow">Next step</div>
           <h2>Discovery hasn't run yet</h2>
-          <p>This project has an intake form on file but Discovery hasn't produced an
-          enriched brief. Open chat and SADiscoveryAgent will read your intake, pattern-match
-          against the reference architectures, and ask only about the gaps.</p>
+          <p>SADiscoveryAgent will read your intake, pattern-match against the
+          reference architectures, and ask only about the gaps. Each question
+          comes as an interactive card you click to answer.</p>
         </div>
-        <div class="discovery-cta-actions">
+        <div class="progress-cta-actions">
           <button id="start-discovery-btn" class="cta-btn">Start Discovery →</button>
         </div>
       </div>`;
+  }
+
+  // Wire click handlers on whichever progress-CTA buttons exist this render.
+  function wireProgressCtaActions(root, eid) {
+    const openChatWith = (text) => {
+      applyChat("open");
+      const ci = document.getElementById("chat-input");
+      if (ci) {
+        if (text) ci.value = text;
+        ci.focus();
+      }
+    };
+    root.querySelector("#start-discovery-btn")?.addEventListener("click", () =>
+      openChatWith("Let's start discovery — please review the intake and ask your first follow-up."));
+    root.querySelector("#continue-in-chat-btn")?.addEventListener("click", () =>
+      openChatWith(""));
+    root.querySelector("#restart-discovery-btn")?.addEventListener("click", () =>
+      openRestartDiscoveryModal(eid));
+  }
+
+  // Restart Discovery — destructive action; uses a typed-id confirmation
+  // modal so a stray click can't wipe state.
+  function openRestartDiscoveryModal(eid) {
+    openModal(`
+      <div class="modal-section">
+        <h2>Restart Discovery for <code>${escapeHtml(eid)}</code>?</h2>
+        <p>This will:</p>
+        <ul style="margin: 6px 0 12px 18px; font-size: 13px; line-height: 1.6;">
+          <li>delete <code>discovery/discovery-brief.yaml</code> and
+              <code>discovery/discovery-summary.md</code></li>
+          <li>mark any open-items recorded by Discovery as <code>superseded</code></li>
+          <li>clear the Discovery entry in <code>meta/engagement-status.yaml</code></li>
+        </ul>
+        <p>Your intake form is <strong>not</strong> touched. Decisions and findings
+        recorded by other agents are <strong>not</strong> touched.</p>
+        <p style="margin-top: 12px;">Type the project id <code>${escapeHtml(eid)}</code>
+        to confirm:</p>
+        <input id="restart-confirm-input" type="text" autocomplete="off"
+               style="width: 100%; padding: 8px 10px; font-family: 'Space Mono', monospace;
+                      font-size: 13px; border: 1px solid var(--border); border-radius: 4px;
+                      margin-top: 6px;">
+        <div class="modal-actions" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px;">
+          <button class="cta-btn cta-btn-secondary" data-modal-close>Cancel</button>
+          <button id="restart-confirm-btn" class="cta-btn cta-btn-danger" disabled>Restart Discovery</button>
+        </div>
+      </div>`, { focus: "#restart-confirm-input" });
+
+    const input = document.getElementById("restart-confirm-input");
+    const btn = document.getElementById("restart-confirm-btn");
+    input?.addEventListener("input", () => {
+      btn.disabled = input.value.trim() !== eid;
+    });
+    btn?.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "Restarting…";
+      try {
+        const res = await fetch(`/api/engagements/${encodeURIComponent(eid)}/discovery`, { method: "DELETE" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        closeModal();
+        // Refresh the view so the CTA flips back to "Start Discovery".
+        render();
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = "Restart Discovery";
+        alert(`Restart failed: ${err.message}`);
+      }
+    });
   }
 
   // ============================================================================

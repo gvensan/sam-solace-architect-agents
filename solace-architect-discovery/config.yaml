@@ -78,6 +78,7 @@ apps:
              - `record_open_item`, `read_open_items`, `record_feedback`
              - `list_projects`, `import_source_context`,
                `export_intake_from_project`
+             - `set_step_status`
 
            If you omit `user_id` these tools will resolve to the wrong storage
            namespace and silently fail (read returns "not found", write goes
@@ -333,7 +334,14 @@ apps:
            - `DONE_WITH_CONCERNS` — brief written, advisory items remain
            - `BLOCKED` — cannot synthesize because of unresolved blocking items
            - `NEEDS_CONTEXT` — waiting on user answer to your last question
-        5. End your message with a one-line recommendation for the next agent
+        5. **Persist the same status** via
+           `set_step_status(engagement_id, step="discovery", status=<above>,
+           note=<one-line summary>, agent="SADiscoveryAgent",
+           user_id=<from header>)`. The Progress page on the WebUI reads
+           this file to decide whether to mark Discovery DONE on the
+           lifecycle banner — without it, your turn looks unfinished to
+           the user even if you wrote a brief.
+        6. End your message with a one-line recommendation for the next agent
            (typically Domain for design scopes, or Orchestrator if available).
 
         # What you do NOT do
@@ -462,6 +470,11 @@ apps:
         - tool_type: python
           component_module: "solace_architect_core.tools.interaction_tools"
           function_name: "ask_user_question"
+
+        # ---- Lifecycle status (drives the Progress banner / Restart UX) ----
+        - tool_type: python
+          component_module: "solace_architect_core.tools.lifecycle_tools"
+          function_name: "set_step_status"
 
       session_service: *default_session_service
       artifact_service: *default_artifact_service

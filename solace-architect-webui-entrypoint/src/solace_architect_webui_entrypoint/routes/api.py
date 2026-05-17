@@ -16,8 +16,9 @@ from datetime import datetime, timezone
 from solace_architect_core.tools import (
     artifact_tools, decision_tools, project_tools,
     dashboard_tools, intake_tools, blueprint_tools,
-    telemetry_tools,
+    telemetry_tools, lifecycle_tools,
 )
+from solace_architect_core._storage import safe_artifact_path
 
 
 _VALID_GROUP_BY_ENGAGEMENT = {"agent", "step", "model", "day"}
@@ -101,6 +102,56 @@ async def get_artifact(engagement_id: str, name: str) -> Any:
 
 async def list_engagement_artifacts(engagement_id: str, category: str | None = None) -> Any:
     return (await artifact_tools.list_artifacts(engagement_id, category=category)).data
+
+
+# ----- Lifecycle / step status -----
+
+async def get_engagement_lifecycle(engagement_id: str) -> Any:
+    """Return persisted Completion Statuses per step.
+
+    Shape: ``{"steps": {step_id: {status, updated_at, agent, note}}}``.
+    Missing steps are treated as NOT_STARTED by the caller.
+    """
+    return (await lifecycle_tools.get_engagement_status(engagement_id)).data
+
+
+async def reset_discovery(engagement_id: str) -> Any:
+    """Hard-reset the discovery step.
+
+    Removes:
+      - discovery/discovery-brief.yaml
+      - discovery/discovery-summary.md
+      - the discovery entry in meta/engagement-status.yaml
+    Marks open-items with source='discovery' as 'superseded' (we don't
+    hard-delete in case a prior agent turn referenced an item id).
+    """
+    removed = []
+    for name in ("discovery/discovery-brief.yaml", "discovery/discovery-summary.md"):
+        try:
+            path = safe_artifact_path(engagement_id, name)
+            if path.exists():
+                path.unlink()
+                removed.append(name)
+        except Exception:
+            # Don't let one missing/locked file block the rest of the reset.
+            pass
+
+    # Clear status entry
+    await lifecycle_tools.clear_step_status(engagement_id, "discovery")
+
+    # Supersede discovery-sourced open-items
+    items_res = await decision_tools.read_open_items(engagement_id, source="discovery")
+    superseded = 0
+    if items_res.ok and items_res.data:
+        for item in items_res.data:
+            if item.get("status") == "open":
+                await decision_tools.update_open_item_status(
+                    engagement_id, item_id=item["id"], new_status="superseded",
+                    resolution_note="Superseded by Discovery restart",
+                )
+                superseded += 1
+
+    return {"removed_artifacts": removed, "open_items_superseded": superseded}
 
 
 # ----- Intake -----
@@ -306,6 +357,8 @@ API_ROUTES = [
     ("POST", "/api/engagements/{engagement_id}/open-items/{item_id}/resolve", resolve_open_item),
     ("GET",  "/api/engagements/{engagement_id}/artifacts",    list_engagement_artifacts),
     ("GET",  "/api/engagements/{engagement_id}/artifacts/{name}", get_artifact),
+    ("GET",  "/api/engagements/{engagement_id}/lifecycle",    get_engagement_lifecycle),
+    ("DELETE","/api/engagements/{engagement_id}/discovery",   reset_discovery),
     # Intake
     ("POST", "/api/intake/preview",                           intake_preview),
     ("GET",  "/api/intake/download-yaml",                     intake_download_yaml),
