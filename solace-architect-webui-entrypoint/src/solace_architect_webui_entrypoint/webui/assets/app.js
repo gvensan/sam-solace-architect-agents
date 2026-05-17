@@ -378,18 +378,33 @@
         const statusValue = activeProject?.status || "active";
         const hasIntake = artifacts.some(a => a === "discovery/intake.json");
         const hasDiscovery = artifacts.some(a => a === "discovery/discovery-summary.md");
+        // Discovery is "in progress" if the agent has recorded any
+        // open-items or written a partial discovery-brief.yaml. We don't
+        // want users clicking "Start Discovery" a second time mid-flow.
+        const hasDiscoveryBrief = artifacts.some(a => a === "discovery/discovery-brief.yaml");
+        const openItemsCount = (stats.open_items_blocking || 0) + (stats.open_items_advisory || 0);
+        const discoveryInProgress = !hasDiscovery && (hasDiscoveryBrief || openItemsCount > 0);
         const discoveryCta = (hasIntake && !hasDiscovery)
-          ? renderDiscoveryCta(eid)
+          ? renderDiscoveryCta(eid, { inProgress: discoveryInProgress })
           : "";
+        // Determine the active step from artifact state. Per-step
+        // banners highlight where the engagement is in the lifecycle.
+        const activeStepId = hasDiscovery ? "design"
+          : discoveryInProgress ? "discovery"
+          : hasIntake ? "discovery"
+          : "intake";
+        const completedSteps = new Set();
+        if (hasIntake) completedSteps.add("intake");
+        if (hasDiscovery) completedSteps.add("discovery");
+
         root.innerHTML = `
-          <h1>Overview</h1>
+          <h1>Progress</h1>
+          ${renderProgressBanner({ active: activeStepId, completed: completedSteps })}
           ${discoveryCta}
 
-          <!-- Compact engagement-state tiles. Status is the first tile (Overview only);
+          <!-- Compact engagement-state tiles. Status is the first tile (Progress only);
                Activities lives on Decisions. -->
           ${renderHeroTiles(stats, { statusValue, includeActivities: false })}
-
-          ${renderIntakeBrief(intake)}
         `;
         root.querySelector("#start-discovery-btn")?.addEventListener("click", () => {
           applyChat("open");
@@ -401,6 +416,27 @@
         });
       } catch (e) {
         root.innerHTML = `<div class="welcome"><h1>Overview unavailable</h1><p>${escapeHtml(e.message || e)}</p></div>`;
+      }
+    },
+
+    // Requirements view — the intake-derived content (project metadata,
+    // landscape, requirements, goals) that used to be tacked onto the
+    // bottom of Overview. Lives under its own sidebar entry so Progress
+    // stays focused on engagement state.
+    requirements: async (root, eid) => {
+      try {
+        const intakeRes = await fetch(`/api/intake/load/${encodeURIComponent(eid)}`).then(r => r.json());
+        const intake = (intakeRes && intakeRes.intake) || {};
+        root.innerHTML = `
+          <h1>Requirements</h1>
+          <p class="muted" style="margin-top:-4px;margin-bottom:18px;font-size:13px;">
+            Submitted intake for this engagement. SADiscoveryAgent enriches this into
+            <code>discovery/discovery-brief.yaml</code> as discovery progresses.
+          </p>
+          ${renderIntakeBrief(intake)}
+        `;
+      } catch (e) {
+        root.innerHTML = `<div class="welcome"><h1>Requirements unavailable</h1><p>${escapeHtml(e.message || e)}</p></div>`;
       }
     },
 
@@ -517,10 +553,68 @@
     },
   };
 
+  // Per-step illustration banners shown above the engagement stat tiles.
+  // Each step gets a hand-rolled inline SVG so we don't depend on any
+  // external icon set. State drives the styling: completed = checkmark
+  // tint, active = accent border + glow, pending = muted.
+  function renderProgressBanner({ active, completed }) {
+    const steps = [
+      { id: "intake",       label: "Intake",       svg: "M3 4h18v4H3zM3 12h18v4H3zM3 20h18" },
+      { id: "discovery",    label: "Discovery",    svg: "M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm10 2-5-5" },
+      { id: "design",       label: "Design",       svg: "M3 3l6 6v12l6-6V3zM3 3l6 6 6-6" },
+      { id: "review",       label: "Review",       svg: "M4 4h16v12H4zM4 4l8 6 8-6M8 20h8" },
+      { id: "validation",   label: "Validation",   svg: "M5 12l5 5L20 7" },
+      { id: "blueprint",    label: "Blueprint",    svg: "M4 4h16v16H4zM4 9h16M9 4v16" },
+      { id: "provisioning", label: "Provisioning", svg: "M12 2v6M12 22v-6M2 12h6M22 12h-6M5 5l4 4M19 19l-4-4M19 5l-4 4M5 19l4-4" },
+    ];
+    return `
+      <div class="progress-banner" role="navigation" aria-label="Engagement lifecycle">
+        ${steps.map(s => {
+          const isActive = s.id === active;
+          const isDone = completed.has(s.id);
+          const cls = "progress-step "
+            + (isActive ? "active " : "")
+            + (isDone ? "done " : "")
+            + ((!isActive && !isDone) ? "pending " : "");
+          return `
+            <div class="${cls.trim()}" data-step="${s.id}">
+              <div class="progress-icon">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round">
+                  <path d="${s.svg}"/>
+                </svg>
+                ${isDone ? `<span class="progress-check" aria-hidden="true">✓</span>` : ""}
+              </div>
+              <div class="progress-label">${s.label}</div>
+            </div>`;
+        }).join("")}
+      </div>`;
+  }
+
   // Discovery CTA shown on Overview when intake.json exists but Discovery
   // hasn't produced its summary yet. One-click opens chat with a primed
   // message — the agent then reads intake.json and asks its first follow-up.
-  function renderDiscoveryCta(eid) {
+  //
+  // When discovery is already mid-flow (open-items recorded, or a partial
+  // discovery-brief.yaml exists), the button is disabled and the headline
+  // shifts so the user knows to continue in chat rather than start over.
+  function renderDiscoveryCta(eid, { inProgress = false } = {}) {
+    if (inProgress) {
+      return `
+        <div class="discovery-cta in-progress" role="region" aria-label="Discovery in progress">
+          <div class="discovery-cta-body">
+            <div class="discovery-cta-eyebrow">In progress</div>
+            <h2>Discovery is in progress</h2>
+            <p>SADiscoveryAgent is currently working through the gaps in your intake.
+            Continue the conversation in chat — the brief will appear here once the agent
+            finishes its first pass.</p>
+          </div>
+          <div class="discovery-cta-actions">
+            <button class="cta-btn" disabled aria-disabled="true">Discovery in progress…</button>
+          </div>
+        </div>`;
+    }
     return `
       <div class="discovery-cta" role="region" aria-label="Discovery not yet run">
         <div class="discovery-cta-body">
@@ -989,12 +1083,35 @@
     return loadChatHistory(sid).length > 0;
   }
 
+  // Render agent text as sanitized HTML (markdown parsed by marked,
+  // sanitized by DOMPurify). User text stays as textContent — we have
+  // no reason to render markdown of the user's own input, and it
+  // sidesteps any HTML they might paste.
+  function renderAgentMarkdown(el, text) {
+    if (typeof marked === "undefined" || typeof DOMPurify === "undefined") {
+      // Libraries didn't load (offline, blocked CDN, etc.) — degrade
+      // gracefully to plain text.
+      el.textContent = text;
+      return;
+    }
+    try {
+      const html = marked.parse(text, { breaks: true, gfm: true });
+      el.innerHTML = DOMPurify.sanitize(html);
+    } catch (err) {
+      el.textContent = text;
+    }
+  }
+
   function appendChatMessage(role, text, opts = {}) {
     const empty = chatLog.querySelector(".chat-empty");
     if (empty) empty.remove();
     const div = document.createElement("div");
     div.className = `chat-msg ${role}`;
-    div.textContent = text;
+    if (role === "agent") {
+      renderAgentMarkdown(div, text);
+    } else {
+      div.textContent = text;
+    }
     chatLog.appendChild(div);
     chatLog.scrollTop = chatLog.scrollHeight;
     if (!opts.skipPersist && chatSessionId) {
@@ -1090,11 +1207,11 @@
     if (!pendingAgentMsg) {
       const div = document.createElement("div");
       div.className = "chat-msg agent agent-thinking";
-      div.textContent = display;
+      renderAgentMarkdown(div, display);
       chatLog.appendChild(div);
       pendingAgentMsg = { el: div, lastText: text };
     } else if (text !== pendingAgentMsg.lastText) {
-      pendingAgentMsg.el.textContent = display;
+      renderAgentMarkdown(pendingAgentMsg.el, display);
       pendingAgentMsg.lastText = text;
     }
     chatLog.scrollTop = chatLog.scrollHeight;
@@ -1133,7 +1250,7 @@
 
     if (pendingAgentMsg) {
       pendingAgentMsg.el.classList.remove("agent-thinking");
-      if (cleanText) pendingAgentMsg.el.textContent = cleanText;
+      if (cleanText) renderAgentMarkdown(pendingAgentMsg.el, cleanText);
       else pendingAgentMsg.el.remove();
       pendingAgentMsg = null;
     } else if (cleanText) {
@@ -1338,7 +1455,10 @@
     // submit handler picks up `pendingDeferredQuestion` and attaches
     // the question_id to the outgoing message so the agent knows which
     // question the free-text answer refers to.
-    if (schema.allow_custom !== false) {
+    //
+    // Skip for free_text: the textarea IS already a free-text input,
+    // so adding a "type a custom answer" link is redundant and confusing.
+    if (schema.allow_custom !== false && schema.kind !== "free_text") {
       const custom = document.createElement("button");
       custom.type = "button";
       custom.className = "question-custom-link";

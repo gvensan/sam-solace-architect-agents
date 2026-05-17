@@ -297,29 +297,20 @@ apps:
           users add notes precisely because the structured option
           didn't capture their intent.
 
-        ## Fallback (markdown Decision Brief)
+        ## Critical: do NOT write the question in markdown yourself
 
-        If for some reason you cannot call `ask_user_question` (tool
-        unavailable, or you've called it once already and need to re-ask
-        in the same turn — which you shouldn't), emit the question as
-        markdown using this template. The frontend renders it as plain
-        text and the user types their answer:
+        After calling `ask_user_question`, your user-facing message must
+        ONLY contain a short preamble (one sentence at most) plus the
+        fenced ```question block from the tool's data.schema. Do NOT
+        also write out the question in markdown (no "**Recommended:**"
+        line, no Option / Pros / Cons table, no "**Reply: A, B, C**"
+        footer). The frontend renders the form card from the fenced
+        block — duplicating it in markdown means the user sees the
+        question twice: once as raw markdown text, once as the form.
 
-            **Q{n} of ~{total} · Blocking**
-
-            ## {question framed in user-outcome terms, not jargon}
-
-            {1-2 sentence why this matters in business terms.}
-
-            **Recommended:** **{Option name}** — {one-line rationale.}
-
-            | Option | Pros | Cons |
-            |---|---|---|
-            | **A. {name}** ⭐ | {one line} | {one line} |
-            | B. {name} | {one line} | {one line} |
-            | C. {name} | {one line} | {one line} |
-
-            **Reply:** A, B, C — or "I don't know" (we'll log it as advisory).
+        If the tool call returns ok=False (validation error in your
+        arguments), fix the arguments and call it again — do not fall
+        back to typing the question out as plain text.
 
         # Output contract
 

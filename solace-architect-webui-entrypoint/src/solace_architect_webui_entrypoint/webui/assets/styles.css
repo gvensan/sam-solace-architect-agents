@@ -333,7 +333,42 @@ body[data-chat="closed"] .chat-panel { display: none; }
   font-size: 13px; line-height: 1.5;
 }
 .chat-msg.user { align-self: flex-end; background: var(--accent); color: var(--primary); }
-.chat-msg.agent { align-self: flex-start; background: var(--bg); border: 1px solid var(--border); color: var(--text); white-space: pre-wrap; word-wrap: break-word; }
+.chat-msg.agent { align-self: flex-start; background: var(--bg); border: 1px solid var(--border); color: var(--text); word-wrap: break-word; }
+/* Markdown elements inside an agent bubble — reset stock browser margins
+   so the bubble feels compact; style tables/code so they're readable. */
+.chat-msg.agent p { margin: 0 0 8px; }
+.chat-msg.agent p:last-child { margin-bottom: 0; }
+.chat-msg.agent h1, .chat-msg.agent h2, .chat-msg.agent h3, .chat-msg.agent h4 {
+  margin: 12px 0 6px; font-weight: 700;
+}
+.chat-msg.agent h1 { font-size: 16px; } .chat-msg.agent h2 { font-size: 15px; }
+.chat-msg.agent h3 { font-size: 14px; } .chat-msg.agent h4 { font-size: 13px; }
+.chat-msg.agent ul, .chat-msg.agent ol { margin: 4px 0 8px; padding-left: 20px; }
+.chat-msg.agent li { margin: 2px 0; }
+.chat-msg.agent code {
+  background: rgba(0,0,0,0.06); padding: 1px 4px; border-radius: 3px;
+  font-family: 'Space Mono', monospace; font-size: 12px;
+}
+.chat-msg.agent pre {
+  background: rgba(0,0,0,0.06); padding: 8px 10px; border-radius: 4px;
+  font-family: 'Space Mono', monospace; font-size: 12px;
+  overflow-x: auto; margin: 6px 0;
+}
+.chat-msg.agent pre code { background: none; padding: 0; }
+.chat-msg.agent table {
+  border-collapse: collapse; margin: 8px 0; font-size: 12px;
+  display: block; max-width: 100%; overflow-x: auto;
+}
+.chat-msg.agent th, .chat-msg.agent td {
+  border: 1px solid var(--border); padding: 4px 8px; text-align: left;
+}
+.chat-msg.agent th { background: rgba(0,0,0,0.04); font-weight: 600; }
+.chat-msg.agent blockquote {
+  margin: 6px 0; padding-left: 10px;
+  border-left: 3px solid var(--accent); color: var(--muted, #888);
+}
+.chat-msg.agent hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+.chat-msg.agent a { color: var(--accent); text-decoration: underline; }
 .chat-msg.agent-thinking { opacity: 0.85; border-color: var(--accent); }
 .chat-msg.agent-thinking::after {
   content: "▍"; margin-left: 2px; color: var(--accent);
@@ -711,6 +746,39 @@ pre {
 .discovery-cta p { color: var(--muted); font-size: 13px; line-height: 1.5; max-width: 70ch; }
 .discovery-cta-actions { flex-shrink: 0; }
 .discovery-cta-actions .cta-btn { font-size: 14px; padding: 8px 14px; cursor: pointer; }
+.discovery-cta-actions .cta-btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.discovery-cta.in-progress { border-color: var(--accent); background: linear-gradient(to right, rgba(0,0,0,0.02), transparent); }
+.discovery-cta.in-progress .discovery-cta-eyebrow { color: var(--accent); }
+
+/* Per-step progress banner shown above the stat tiles on the Progress
+   view. Visual states: pending = muted, done = check-tint, active =
+   accent border + light fill. */
+.progress-banner {
+  display: flex; gap: 8px; margin: 12px 0 18px;
+  padding: 4px 0; overflow-x: auto;
+}
+.progress-step {
+  flex: 1; min-width: 88px; display: flex; flex-direction: column;
+  align-items: center; gap: 6px;
+  padding: 12px 8px;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg); color: var(--muted, #888);
+  transition: all 0.15s;
+}
+.progress-step.done { color: var(--accent); border-color: var(--accent); background: rgba(0,0,0,0.02); }
+.progress-step.active {
+  color: var(--primary); border-color: var(--accent); border-width: 2px;
+  background: rgba(0, 200, 100, 0.05);
+  box-shadow: 0 0 0 2px rgba(0, 200, 100, 0.08);
+}
+.progress-icon { position: relative; display: flex; align-items: center; justify-content: center; }
+.progress-check {
+  position: absolute; bottom: -4px; right: -6px;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--accent); color: white; font-size: 10px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.progress-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
 
 /* Settings page (two-pane: inner sidebar + content) */
 .settings-page { display: grid; grid-template-columns: 220px 1fr; gap: 24px; align-items: start; }

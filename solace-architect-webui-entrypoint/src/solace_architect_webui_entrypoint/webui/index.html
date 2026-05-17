@@ -5,6 +5,11 @@
   <title>Solace Architect</title>
   <link rel="stylesheet" href="/assets/styles.css">
   <link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <!-- Markdown rendering for chat agent messages. marked = parser,
+       DOMPurify = sanitizer (defense-in-depth against any injection in
+       agent output). Both pinned to a known version. -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.0/dist/purify.min.js"></script>
 </head>
 <body data-sidebar="open" data-chat="closed">
   <header class="app-header">
@@ -74,7 +79,8 @@
 
         <div id="project-nav" class="sidebar-section project-nav hidden">
           <div class="sidebar-section-title">Active project</div>
-          <a href="#" class="nav-link" data-view="overview">Overview</a>
+          <a href="#" class="nav-link" data-view="overview">Progress</a>
+          <a href="#" class="nav-link" data-view="requirements">Requirements</a>
           <a href="#" class="nav-link" data-view="decisions">Decisions</a>
           <a href="#" class="nav-link" data-view="timeline">Timeline</a>
           <a href="#" class="nav-link" data-view="open-items">Open Items</a>
