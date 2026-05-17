@@ -1380,6 +1380,20 @@
     }
     if (blocks.length) chatLog.scrollTop = chatLog.scrollHeight;
 
+    // Safety net: if the agent emitted a markdown-style multiple-choice
+    // question instead of a ```question block (LLM sometimes ignores
+    // the tool-call rule), detect the "Reply: A, B, C" footer and offer
+    // a clickable chip row + optional note. The user gets the same
+    // form-like UX without typing the letter in chat.
+    if (!blocks.length && cleanText) {
+      const replyOptions = detectReplyPattern(cleanText);
+      if (replyOptions) {
+        const chips = renderQuickReplyChips(replyOptions);
+        chatLog.appendChild(chips);
+        chatLog.scrollTop = chatLog.scrollHeight;
+      }
+    }
+
     // Persist the final text to history (forms are not persisted — on reload
     // the user sees the cleanText only, which is intentional: the form is
     // single-use; the answer they gave appears as their own message).
@@ -1596,6 +1610,121 @@
   // agent receives the free-text answer correlated to the right
   // question. Cleared after one submission.
   let pendingDeferredQuestion = null;
+
+  // Detect a "Reply: A, B, C" / "Reply: A, B, or C" / "Reply: yes or no"
+  // footer in an agent markdown message. Returns either an array of
+  // letter labels (single_choice) or {kind:"yes_no"}, or null if no
+  // such pattern is found.
+  //
+  // Why: SADiscoveryAgent sometimes emits a structured question as
+  // markdown instead of calling ask_user_question. The chip row gives
+  // users a click-not-type affordance regardless of which path the LLM
+  // chose.
+  function detectReplyPattern(text) {
+    // Match the closing instruction. Looks for:
+    //   **Reply:** A, B, C — or describe...
+    //   Reply: A, B, or C
+    //   (Reply: A/B/C — or describe...)
+    //   Reply: yes or no
+    const re = /(?:^|\n)[*_(]*Reply[*_:\s]*\s*[*_:]?\s*([A-Za-z][A-Za-z\s,/]*?[A-Za-z])(?:\s*[—\-–]|\s*\(|\s*$)/im;
+    const m = text.match(re);
+    if (!m) return null;
+
+    const raw = m[1].trim();
+    const lower = raw.toLowerCase();
+
+    // yes/no detection
+    if (/\byes\b/.test(lower) && /\bno\b/.test(lower)) {
+      return { kind: "yes_no" };
+    }
+
+    // Letter list — split on comma / slash / "or" and keep single uppercase letters
+    const tokens = raw.split(/[,/]|\bor\b/i).map(t => t.trim()).filter(Boolean);
+    const letters = tokens.filter(t => /^[A-Z]$/.test(t));
+    if (letters.length >= 2 && letters.length <= 6) {
+      return { kind: "single_choice", letters };
+    }
+    return null;
+  }
+
+  // Render a quick-reply chip row appended after a markdown agent
+  // message. Click = submit (chip behaves like yes_no buttons —
+  // immediate, with the note included if filled).
+  function renderQuickReplyChips({ kind, letters }) {
+    const card = document.createElement("div");
+    card.className = "chat-msg agent quick-reply-chips";
+
+    const label = document.createElement("div");
+    label.className = "quick-reply-label";
+    label.textContent = "Quick reply:";
+    card.appendChild(label);
+
+    const row = document.createElement("div");
+    row.className = "quick-reply-row";
+
+    const choices = kind === "yes_no" ? ["yes", "no"] : letters;
+    const display = kind === "yes_no"
+      ? { yes: "Yes", no: "No" }
+      : Object.fromEntries(letters.map(l => [l, l]));
+
+    // Track the optional note value so chips can grab it on click.
+    let getNote = () => null;
+
+    choices.forEach(value => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "quick-reply-chip";
+      btn.textContent = display[value];
+      btn.addEventListener("click", () => {
+        const note = getNote();
+        const displayText = note ? `${display[value]} — ${note}` : display[value];
+        // Lock the whole row so the user can't double-submit.
+        Array.from(card.querySelectorAll("button, textarea")).forEach(el => el.disabled = true);
+        card.classList.add("question-answered");
+        submitQuickReply({ kind, value, displayText, note, cardEl: card });
+      });
+      row.appendChild(btn);
+    });
+    card.appendChild(row);
+
+    // Note toggle (same UX as the form-card note section).
+    getNote = renderNoteSection(card);
+
+    return card;
+  }
+
+  async function submitQuickReply({ kind, value, displayText, note, cardEl }) {
+    if (!chatSessionId) chatSessionId = deriveChatSessionId();
+    if (!chatEventSource) openSseStream(chatSessionId);
+
+    appendChatMessage("user", displayText);
+
+    const eid = currentProjectId();
+    const agent = chatAgentSelect?.value || "";
+    const data = { kind: "quick_reply", source_kind: kind, answer: value };
+    if (note) data.note = note;
+    const body = {
+      text: displayText,
+      data,
+      session_id: chatSessionId,
+    };
+    if (agent) body.agent = agent;
+    if (eid) body.engagement_id = eid;
+
+    try {
+      const res = await fetch("/api/chat/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      // Unlock so the user can retry.
+      Array.from(cardEl.querySelectorAll("button, textarea")).forEach(el => el.disabled = false);
+      cardEl.classList.remove("question-answered");
+      appendChatMessage("agent", "[error] could not send reply: " + err.message + " — please retry");
+    }
+  }
 
   // Append a "+ Add a note" toggle + collapsed textarea to the form.
   // Returns a getter that reads the textarea value (trimmed, or null if

@@ -462,6 +462,30 @@ body[data-chat="closed"] .chat-panel { display: none; }
   background: var(--bg); color: var(--text); resize: vertical;
 }
 
+/* Quick-reply chip row appended below a markdown agent message when
+   we detect a "Reply: A, B, C" footer. Safety net when the LLM emits
+   a structured question as markdown instead of calling ask_user_question. */
+.chat-msg.agent.quick-reply-chips {
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 8px 12px; border-style: dashed;
+}
+.quick-reply-label {
+  font-family: 'Space Mono', monospace; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--muted, #888);
+}
+.quick-reply-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.quick-reply-chip {
+  min-width: 44px; padding: 6px 14px;
+  font-family: 'Space Mono', monospace; font-size: 13px; font-weight: 700;
+  background: var(--bg); color: var(--primary);
+  border: 1px solid var(--accent); border-radius: 6px;
+  cursor: pointer; transition: background 0.1s;
+}
+.quick-reply-chip:hover { background: var(--accent); color: var(--primary); }
+.quick-reply-chip:disabled { opacity: 0.5; cursor: not-allowed; }
+.chat-msg.agent.quick-reply-chips.question-answered { opacity: 0.55; }
+
 .chat-form {
   display: flex; flex-direction: column; gap: 8px; padding: 12px;
   border-top: 1px solid var(--border);
