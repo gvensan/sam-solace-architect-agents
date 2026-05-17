@@ -280,7 +280,48 @@
   // ============================================================================
   // Render dispatch
   // ============================================================================
+
+  // Auto-refresh timer for the Progress view. Cleared on every render()
+  // and re-armed by VIEWS.overview at the end of its render. Pauses
+  // when the tab is hidden so we don't burn cycles in background tabs.
+  let progressRefreshTimer = null;
+  const PROGRESS_REFRESH_MS = 10000;
+
+  function clearProgressAutoRefresh() {
+    if (progressRefreshTimer) {
+      clearInterval(progressRefreshTimer);
+      progressRefreshTimer = null;
+    }
+  }
+
+  function armProgressAutoRefresh(eid) {
+    clearProgressAutoRefresh();
+    progressRefreshTimer = setInterval(() => {
+      // Skip the tick while tab is hidden — picks up on visibility return.
+      if (document.hidden) return;
+      // Skip if we navigated away while the timer was queued.
+      if (currentView() !== "overview" || currentProjectId() !== eid) {
+        clearProgressAutoRefresh();
+        return;
+      }
+      // Silent re-render — same VIEWS.overview, fetches fresh data.
+      const content = document.getElementById("content");
+      if (content) VIEWS.overview(content, eid);
+    }, PROGRESS_REFRESH_MS);
+  }
+
+  // Catch visibility-return so the user sees fresh state the moment
+  // they switch back to the tab, not 10s later.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && progressRefreshTimer) {
+      const content = document.getElementById("content");
+      const eid = currentProjectId();
+      if (content && eid && currentView() === "overview") VIEWS.overview(content, eid);
+    }
+  });
+
   async function render() {
+    clearProgressAutoRefresh();  // any navigation cancels the timer
     const path = currentPath();
     const content = document.getElementById("content");
     const projectNav = document.getElementById("project-nav");
@@ -415,6 +456,10 @@
           ${renderHeroTiles(stats, { statusValue, includeActivities: false })}
         `;
         wireProgressCtaActions(root, eid);
+        // Self-refresh every PROGRESS_REFRESH_MS so the banner / CTA /
+        // tiles update without a manual reload while the user watches
+        // discovery / design / etc complete in chat.
+        armProgressAutoRefresh(eid);
       } catch (e) {
         root.innerHTML = `<div class="welcome"><h1>Overview unavailable</h1><p>${escapeHtml(e.message || e)}</p></div>`;
       }
