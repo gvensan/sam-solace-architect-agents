@@ -342,6 +342,91 @@ body[data-chat="closed"] .chat-panel { display: none; }
 @keyframes chat-cursor { 50% { opacity: 0; } }
 .chat-msg.agent-error { color: #b00020; border-color: #b00020; }
 
+/* Interactive question card (Phase B of discovery Q&A UX).
+   See solace_architect_core.tools.interaction_tools.ask_user_question +
+   the renderQuestionCard() function in app.js. */
+.chat-msg.question-card {
+  max-width: 95%;
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 12px 14px;
+  border-left: 3px solid var(--accent);
+  white-space: normal;
+}
+.chat-msg.question-card.severity-blocking { border-left-color: #b00020; }
+.chat-msg.question-card.severity-advisory { border-left-color: #b58900; }
+.chat-msg.question-card.severity-info     { border-left-color: var(--accent); }
+.chat-msg.question-card.question-answered { opacity: 0.6; }
+.chat-msg.question-card.question-deferred { opacity: 0.55; font-style: italic; }
+.question-header { display: flex; gap: 8px; align-items: center; font-size: 11px; }
+.question-badge {
+  padding: 2px 6px; border-radius: 3px;
+  font-family: 'Space Mono', monospace; font-weight: 700; letter-spacing: 0.5px;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+}
+.question-badge.blocking { color: #b00020; border-color: #b00020; }
+.question-badge.advisory { color: #b58900; border-color: #b58900; }
+.question-counter { color: var(--muted, #888); font-family: 'Space Mono', monospace; }
+.question-text { font-weight: 600; font-size: 14px; line-height: 1.4; }
+.question-context { font-size: 12px; color: var(--muted, #888); line-height: 1.5; }
+.question-recommended {
+  padding: 6px 10px; background: var(--bg); border: 1px dashed var(--accent);
+  border-radius: 4px; font-size: 12px;
+}
+.question-form { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.question-opt-row {
+  display: flex; gap: 8px; align-items: flex-start;
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px;
+  cursor: pointer; transition: background 0.1s;
+}
+.question-opt-row:hover { background: var(--bg); }
+.question-opt-row.recommended { border-color: var(--accent); }
+.question-opt-row input { margin-top: 4px; }
+.question-opt-body { flex: 1; font-size: 13px; }
+.question-opt-label { line-height: 1.4; }
+.question-opt-pros, .question-opt-cons { font-size: 11px; margin-top: 2px; color: var(--muted, #888); }
+.question-yesno { display: flex; gap: 8px; }
+.question-yesno-btn {
+  flex: 1; padding: 10px; font-weight: 600; font-size: 14px; cursor: pointer;
+  background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+  font-family: inherit; color: var(--text);
+}
+.question-yesno-btn:hover { background: var(--accent); color: var(--primary); border-color: var(--accent); }
+.question-yesno-btn:disabled { cursor: not-allowed; opacity: 0.5; }
+.question-free-input {
+  padding: 8px 10px; font-size: 13px; font-family: inherit;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg); color: var(--text); resize: vertical;
+}
+.question-example { font-size: 11px; color: var(--muted, #888); }
+.question-example code {
+  background: var(--bg); padding: 1px 4px; border-radius: 2px;
+  font-family: 'Space Mono', monospace; white-space: pre-wrap;
+}
+.question-submit-row { display: flex; justify-content: flex-end; }
+.question-submit { font-size: 13px; padding: 6px 14px; }
+.question-custom-link {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font-size: 11px; color: var(--accent); font-family: inherit;
+  text-align: left; text-decoration: underline;
+}
+.question-custom-link:disabled { color: var(--muted, #888); cursor: not-allowed; text-decoration: none; }
+
+/* "+ Add a note" — collapsed-by-default optional caveat input.
+   Always present on single_choice / yes_no / multi_choice cards. */
+.question-note-wrap { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.question-note-toggle {
+  background: none; border: none; padding: 0; cursor: pointer;
+  font-size: 11px; color: var(--accent); font-family: inherit;
+  text-align: left; align-self: flex-start;
+}
+.question-note-toggle:hover { text-decoration: underline; }
+.question-note-toggle:disabled { color: var(--muted, #888); cursor: not-allowed; }
+.question-note-input {
+  padding: 6px 8px; font-size: 12px; font-family: inherit;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: var(--bg); color: var(--text); resize: vertical;
+}
+
 .chat-form {
   display: flex; flex-direction: column; gap: 8px; padding: 12px;
   border-top: 1px solid var(--border);

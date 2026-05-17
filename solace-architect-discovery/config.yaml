@@ -84,8 +84,9 @@ apps:
            into the wrong directory). Tools NOT in the list above —
            `load_preamble`, `load_jargon_list`, `load_grounding`,
            `record_grounding_gap`, `fetch_canonical_source`,
-           `query_integration_hub`, `parse_intake_document` — read shared
-           resources and do NOT need `user_id`.
+           `query_integration_hub`, `parse_intake_document`,
+           `ask_user_question` — do not touch storage and do NOT need
+           `user_id`.
         1. Call `load_preamble()` (Decision 83). The result is your shared
            accuracy / grounding / voice / naming discipline. Treat its rules as
            non-negotiable.
@@ -180,6 +181,145 @@ apps:
           volumes), ask as plain prose and let the user type.
         - Always carry the user's actual words forward. If they say "we use
           Stripe," do not paraphrase to "your payment processor."
+
+        # Asking the user — use `ask_user_question` for every structured ask
+
+        For ANY question with a defined shape (choice between options, yes/no
+        gate, multi-select checklist, or even a free-text gap), call the
+        `ask_user_question` tool — DO NOT write the question as plain
+        markdown. The WebUI renders the tool's payload as an interactive
+        form card (radio buttons, yes/no buttons, checkboxes, or input
+        box), which is faster and less ambiguous than parsing free-text
+        replies.
+
+        ## How to use it
+
+        Call the tool with the appropriate `kind`:
+
+        - `single_choice` — 2-4 mutually exclusive options. Pass an
+          `options` list of `{id, label, pros?, cons?}` and set
+          `recommended` to the id you'd pick. Use for blocking design
+          decisions (delivery mode, topology, broker tier, etc.).
+        - `yes_no` — binary gate. Omit `options`. Use when the design
+          branches sharply on a single boolean (e.g. "Must point-earn
+          events survive a broker restart?").
+        - `multi_choice` — 2-8 options the user can pick any subset of.
+          Use for batched ADVISORY confirms at the end of a turn.
+        - `free_text` — open-ended ask. Set `placeholder` and (optionally)
+          `example` to guide format. Use for system names, regions,
+          timelines, volumes, anything where no closed option list fits.
+
+        Always set:
+        - `question_id` — a short stable kebab-case slug (e.g.
+          `delivery-mode-q1`, `ordering-q1`). The user's reply DataPart
+          carries the same id so you can correlate.
+        - `severity` — `blocking` (default), `advisory`, or `info`.
+        - `context` — 1-2 sentences in user-outcome terms. Skip Solace
+          jargon; the user cares about their customer outcome, not
+          delivery semantics. The frontend shows this as supporting copy.
+        - `counter` — running counter like `"1 of ~5"` so the user knows
+          how much more is coming.
+
+        After calling the tool, your final message must follow this shape:
+
+            <1-sentence preamble, optional>
+
+            ```question
+            <paste the entire `schema` object from tool's data verbatim>
+            ```
+
+        The frontend extracts the fenced block and renders the form. The
+        preamble is shown above the card. Anything else in your message
+        will appear as ordinary chat text.
+
+        ## Worked example
+
+        Suppose the intake leaves delivery semantics ambiguous for
+        point-earn events. Your tool call:
+
+            ask_user_question(
+              question_id="delivery-mode-q1",
+              question="If a point-earn event is lost in transit, can the customer be short-changed, or does another system reconcile it?",
+              kind="single_choice",
+              context="Guaranteed messaging ensures events survive broker restarts but at-least-once semantics mean duplicate events. Without consumer-side dedup, a customer could be double-credited.",
+              severity="blocking",
+              counter="1 of ~5",
+              recommended="A",
+              options=[
+                {"id": "A", "label": "Guaranteed + idempotent consumer",
+                 "pros": "No double-credits, survives outages",
+                 "cons": "Consumer must store seen transaction-ids"},
+                {"id": "B", "label": "Guaranteed only",
+                 "pros": "Simpler consumer",
+                 "cons": "Duplicate point-grants possible"},
+                {"id": "C", "label": "Exactly-once (XA transactions)",
+                 "pros": "No dedup needed",
+                 "cons": "Higher latency, ops complexity"},
+              ],
+            )
+
+        Your final user-facing message after the tool returns:
+
+            One blocking question before I write the brief — how should
+            point-earn events behave under failure?
+
+            ```question
+            {"id":"delivery-mode-q1","kind":"single_choice","question":"If a point-earn event is lost in transit, can the customer be short-changed, or does another system reconcile it?","severity":"blocking","allow_custom":true,"options":[{"id":"A","label":"Guaranteed + idempotent consumer","pros":"No double-credits, survives outages","cons":"Consumer must store seen transaction-ids"},{"id":"B","label":"Guaranteed only","pros":"Simpler consumer","cons":"Duplicate point-grants possible"},{"id":"C","label":"Exactly-once (XA transactions)","pros":"No dedup needed","cons":"Higher latency, ops complexity"}],"context":"Guaranteed messaging ensures events survive broker restarts but at-least-once semantics mean duplicate events. Without consumer-side dedup, a customer could be double-credited.","recommended":"A","counter":"1 of ~5"}
+            ```
+
+        Note: the JSON object inside the fence is the `schema` field
+        from the tool's return data — paste it verbatim, on one line is
+        fine. Do not add any commentary inside the fence.
+
+        ## Rules
+
+        - Call `ask_user_question` AT MOST ONCE per turn. Even one extra
+          call dumps a second form card on the user before they've
+          answered the first — confusing UX. If you've identified
+          multiple blocking gaps, ask the highest-leverage one this turn
+          and queue the others for subsequent turns.
+        - ONE blocking question per turn. Never batch blocking items.
+        - Advisory items MAY be batched as a single `multi_choice` card
+          at the end of a turn (3-5 items).
+        - 2-4 options for `single_choice`. If you have 5+, you're not done
+          thinking — collapse near-duplicates or split into two questions.
+        - Frame in outcome terms ("Can a point-earn event be lost?"),
+          never in Solace jargon ("Direct vs Guaranteed delivery?").
+        - If the user replies "I don't know" or uses the custom-answer
+          escape hatch with no usable input, record an advisory open-item
+          with your `recommended` value as the assumed default and move
+          on. Do not loop on the same question.
+        - The user's reply DataPart may include an optional `note` field
+          (free-text caveat the user added via "+ Add a note"). When
+          present, treat the note as a caveat on the answer: quote it
+          verbatim in any open-item, decision, or follow-up question
+          you generate from this reply. Never paraphrase the note —
+          users add notes precisely because the structured option
+          didn't capture their intent.
+
+        ## Fallback (markdown Decision Brief)
+
+        If for some reason you cannot call `ask_user_question` (tool
+        unavailable, or you've called it once already and need to re-ask
+        in the same turn — which you shouldn't), emit the question as
+        markdown using this template. The frontend renders it as plain
+        text and the user types their answer:
+
+            **Q{n} of ~{total} · Blocking**
+
+            ## {question framed in user-outcome terms, not jargon}
+
+            {1-2 sentence why this matters in business terms.}
+
+            **Recommended:** **{Option name}** — {one-line rationale.}
+
+            | Option | Pros | Cons |
+            |---|---|---|
+            | **A. {name}** ⭐ | {one line} | {one line} |
+            | B. {name} | {one line} | {one line} |
+            | C. {name} | {one line} | {one line} |
+
+            **Reply:** A, B, C — or "I don't know" (we'll log it as advisory).
 
         # Output contract
 
@@ -326,6 +466,11 @@ apps:
         - tool_type: python
           component_module: "solace_architect_core.tools.decision_tools"
           function_name: "read_open_items"
+
+        # ---- Interactive Q&A (renders a form card in the WebUI) ----
+        - tool_type: python
+          component_module: "solace_architect_core.tools.interaction_tools"
+          function_name: "ask_user_question"
 
       session_service: *default_session_service
       artifact_service: *default_artifact_service

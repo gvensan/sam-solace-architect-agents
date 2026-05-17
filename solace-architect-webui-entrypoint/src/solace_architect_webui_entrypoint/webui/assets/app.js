@@ -1073,41 +1073,384 @@
   // FinalResponse lands we finalize it (and persist to localStorage).
   let pendingAgentMsg = null;     // { el, lastText }
 
+  // While streaming, hide the raw ```question JSON block behind a
+  // "preparing form…" placeholder. We can't safely partial-parse the
+  // JSON yet; the form materializes on finalizeAgentBubble.
+  function maskQuestionBlockDuringStream(text) {
+    const idx = text.indexOf("```question");
+    if (idx === -1) return text;
+    const preamble = text.slice(0, idx).trimEnd();
+    return preamble + (preamble ? "\n\n" : "") + "📝 Preparing question…";
+  }
+
   function startOrUpdateAgentBubble(text) {
     if (!text) return;
     chatLog.querySelector(".chat-empty")?.remove();
+    const display = maskQuestionBlockDuringStream(text);
     if (!pendingAgentMsg) {
       const div = document.createElement("div");
       div.className = "chat-msg agent agent-thinking";
-      div.textContent = text;
+      div.textContent = display;
       chatLog.appendChild(div);
       pendingAgentMsg = { el: div, lastText: text };
     } else if (text !== pendingAgentMsg.lastText) {
-      pendingAgentMsg.el.textContent = text;
+      pendingAgentMsg.el.textContent = display;
       pendingAgentMsg.lastText = text;
     }
     chatLog.scrollTop = chatLog.scrollHeight;
   }
 
+  // Extract ```question { ... } ``` blocks from an agent message; return the
+  // text with those blocks stripped, plus the parsed schemas. See
+  // solace_architect_core.tools.interaction_tools.ask_user_question — the
+  // agent echoes that tool's schema as a fenced block, the frontend renders
+  // it as an interactive form card.
+  function parseQuestionBlocks(text) {
+    if (!text || text.indexOf("```question") === -1) {
+      return { cleanText: text, blocks: [] };
+    }
+    const re = /```question\s*\n([\s\S]*?)\n```/g;
+    const blocks = [];
+    let cleanText = text;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      try {
+        const schema = JSON.parse(m[1]);
+        if (schema && typeof schema === "object" && schema.id && schema.kind) {
+          blocks.push(schema);
+          cleanText = cleanText.replace(m[0], "").trim();
+        }
+      } catch (err) {
+        // Malformed JSON inside the block — leave it visible so the user sees the error.
+      }
+    }
+    return { cleanText, blocks };
+  }
+
   function finalizeAgentBubble(finalText) {
     const text = (finalText || pendingAgentMsg?.lastText || "").trim();
+    const { cleanText, blocks } = parseQuestionBlocks(text);
+
     if (pendingAgentMsg) {
       pendingAgentMsg.el.classList.remove("agent-thinking");
-      if (text) pendingAgentMsg.el.textContent = text;
+      if (cleanText) pendingAgentMsg.el.textContent = cleanText;
+      else pendingAgentMsg.el.remove();
       pendingAgentMsg = null;
-    } else if (text) {
+    } else if (cleanText) {
       // No bubble was opened (no status updates seen) — render the final reply.
-      appendChatMessage("agent", text);
-      return;
+      appendChatMessage("agent", cleanText);
     }
-    // Persist the final text to history (skip if it was already saved
-    // by appendChatMessage above).
+
+    // Render each question schema as an interactive form card after the text.
+    for (const schema of blocks) {
+      const card = renderQuestionCard(schema);
+      chatLog.appendChild(card);
+    }
+    if (blocks.length) chatLog.scrollTop = chatLog.scrollHeight;
+
+    // Persist the final text to history (forms are not persisted — on reload
+    // the user sees the cleanText only, which is intentional: the form is
+    // single-use; the answer they gave appears as their own message).
     if (text && chatSessionId) {
       const log = loadChatHistory(chatSessionId);
-      log.push({ role: "agent", text, ts: Date.now() });
+      log.push({ role: "agent", text: cleanText || "[question card]", ts: Date.now() });
       saveChatHistory(chatSessionId, log);
       updateLoadHistoryButton?.();
     }
+  }
+
+  // Build an interactive form card for one question schema. Submits the
+  // user's answer via the same /api/chat/message endpoint as plain text,
+  // but with a `data` payload (DataPart) so the agent receives a
+  // machine-readable reply.
+  function renderQuestionCard(schema) {
+    const card = document.createElement("div");
+    card.className = `chat-msg agent question-card severity-${schema.severity || "blocking"}`;
+    card.dataset.questionId = schema.id;
+
+    // Header: severity badge + optional counter
+    const header = document.createElement("div");
+    header.className = "question-header";
+    const badge = document.createElement("span");
+    badge.className = `question-badge ${schema.severity || "blocking"}`;
+    badge.textContent = (schema.severity || "blocking").toUpperCase();
+    header.appendChild(badge);
+    if (schema.counter) {
+      const counter = document.createElement("span");
+      counter.className = "question-counter";
+      counter.textContent = schema.counter;
+      header.appendChild(counter);
+    }
+    card.appendChild(header);
+
+    // Question
+    const qEl = document.createElement("div");
+    qEl.className = "question-text";
+    qEl.textContent = schema.question;
+    card.appendChild(qEl);
+
+    // Context (1-2 sentence "why this matters")
+    if (schema.context) {
+      const ctx = document.createElement("div");
+      ctx.className = "question-context";
+      ctx.textContent = schema.context;
+      card.appendChild(ctx);
+    }
+
+    // Recommended callout (single_choice only)
+    if (schema.recommended && schema.kind === "single_choice") {
+      const rec = (schema.options || []).find(o => o.id === schema.recommended);
+      if (rec) {
+        const callout = document.createElement("div");
+        callout.className = "question-recommended";
+        callout.innerHTML = `<strong>★ Recommended:</strong> ${esc(rec.label)}`;
+        card.appendChild(callout);
+      }
+    }
+
+    // Widget per kind
+    const form = document.createElement("form");
+    form.className = "question-form";
+    let getAnswer = () => null;
+
+    // getNote() returns the user-typed caveat string (or null). Defaulted
+    // here; renderNoteSection() (below) sets it for kinds that include a
+    // note toggle. The note is sent on the DataPart reply alongside the
+    // structured answer so the agent can capture caveats verbatim.
+    let getNote = () => null;
+
+    if (schema.kind === "yes_no") {
+      const wrap = document.createElement("div");
+      wrap.className = "question-yesno";
+      ["yes", "no"].forEach(v => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "question-yesno-btn";
+        btn.dataset.value = v;
+        btn.textContent = v === "yes" ? "Yes" : "No";
+        btn.addEventListener("click", () => {
+          const note = getNote();
+          const display = note ? `${btn.textContent} — ${note}` : btn.textContent;
+          submitAnswer(schema, v, display, card, note);
+        });
+        wrap.appendChild(btn);
+      });
+      form.appendChild(wrap);
+    } else if (schema.kind === "single_choice") {
+      // Pre-select the recommended option (or the first option if none
+      // is recommended). Pre-selecting *something* is better than leaving
+      // the form un-submittable, but using the recommended id means a
+      // Submit-without-change matches the agent's recommendation rather
+      // than always option A.
+      const defaultId = schema.recommended || (schema.options?.[0]?.id ?? null);
+      (schema.options || []).forEach(opt => {
+        const row = document.createElement("label");
+        row.className = "question-opt-row";
+        if (opt.id === schema.recommended) row.classList.add("recommended");
+        const checked = opt.id === defaultId ? "checked" : "";
+        row.innerHTML = `
+          <input type="radio" name="opt-${schema.id}" value="${esc(opt.id)}" ${checked}>
+          <div class="question-opt-body">
+            <div class="question-opt-label">${opt.id === schema.recommended ? "★ " : ""}<strong>${esc(opt.label)}</strong></div>
+            ${opt.pros ? `<div class="question-opt-pros"><em>Pros:</em> ${esc(opt.pros)}</div>` : ""}
+            ${opt.cons ? `<div class="question-opt-cons"><em>Cons:</em> ${esc(opt.cons)}</div>` : ""}
+          </div>`;
+        form.appendChild(row);
+      });
+      getAnswer = () => {
+        const checked = form.querySelector(`input[name="opt-${schema.id}"]:checked`);
+        if (!checked) return null;
+        const opt = (schema.options || []).find(o => o.id === checked.value);
+        return { id: checked.value, label: opt ? opt.label : checked.value };
+      };
+    } else if (schema.kind === "multi_choice") {
+      (schema.options || []).forEach(opt => {
+        const row = document.createElement("label");
+        row.className = "question-opt-row";
+        row.innerHTML = `
+          <input type="checkbox" name="opt-${schema.id}" value="${esc(opt.id)}">
+          <div class="question-opt-body"><strong>${esc(opt.label)}</strong></div>`;
+        form.appendChild(row);
+      });
+      getAnswer = () => {
+        const checked = Array.from(form.querySelectorAll(`input[name="opt-${schema.id}"]:checked`));
+        if (!checked.length) return null;
+        const ids = checked.map(c => c.value);
+        const labels = ids.map(id => {
+          const opt = (schema.options || []).find(o => o.id === id);
+          return opt ? opt.label : id;
+        });
+        return { ids, labels };
+      };
+    } else if (schema.kind === "free_text") {
+      const input = document.createElement("textarea");
+      input.className = "question-free-input";
+      input.rows = 3;
+      if (schema.placeholder) input.placeholder = schema.placeholder;
+      form.appendChild(input);
+      if (schema.example) {
+        const ex = document.createElement("div");
+        ex.className = "question-example";
+        ex.innerHTML = `<em>Example:</em> <code>${esc(schema.example)}</code>`;
+        form.appendChild(ex);
+      }
+      getAnswer = () => {
+        const v = input.value.trim();
+        return v ? { text: v } : null;
+      };
+    }
+
+    // Optional note ("+ Add a note") — applies to all kinds except
+    // free_text (where the input itself is already a textarea, so a
+    // second note field would be redundant). Hidden behind a toggle so
+    // the card stays uncluttered for the common case where the user
+    // just picks an option.
+    if (schema.kind !== "free_text") {
+      getNote = renderNoteSection(form);
+    }
+
+    // Submit row (free_text + radio/checkbox need an explicit submit;
+    // yes_no submits on click).
+    if (schema.kind !== "yes_no") {
+      const submitRow = document.createElement("div");
+      submitRow.className = "question-submit-row";
+      const submit = document.createElement("button");
+      submit.type = "submit";
+      submit.className = "cta-btn question-submit";
+      submit.textContent = "Submit answer";
+      submitRow.appendChild(submit);
+      form.appendChild(submitRow);
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const answer = getAnswer();
+        if (answer === null) return;  // nothing selected
+        const note = getNote();
+        const baseDisplay = formatAnswerForDisplay(schema, answer);
+        const display = note ? `${baseDisplay} — ${note}` : baseDisplay;
+        submitAnswer(schema, answer, display, card, note);
+      });
+    }
+
+    card.appendChild(form);
+
+    // "…or type a custom answer" escape hatch — collapses the form,
+    // re-enables the chat input for free-text reply. The chatForm
+    // submit handler picks up `pendingDeferredQuestion` and attaches
+    // the question_id to the outgoing message so the agent knows which
+    // question the free-text answer refers to.
+    if (schema.allow_custom !== false) {
+      const custom = document.createElement("button");
+      custom.type = "button";
+      custom.className = "question-custom-link";
+      custom.textContent = "…or type a custom answer";
+      custom.addEventListener("click", () => {
+        card.classList.add("question-deferred");
+        Array.from(card.querySelectorAll("input, button, textarea")).forEach(el => el.disabled = true);
+        pendingDeferredQuestion = { id: schema.id, kind: schema.kind, cardEl: card };
+        chatInput?.focus();
+        if (chatInput) chatInput.placeholder = `Custom reply to "${schema.id}"…`;
+      });
+      card.appendChild(custom);
+    }
+
+    return card;
+  }
+
+  // Set when the user clicks "…or type a custom answer" on a form
+  // card. The next chatForm submit attaches this as DataPart so the
+  // agent receives the free-text answer correlated to the right
+  // question. Cleared after one submission.
+  let pendingDeferredQuestion = null;
+
+  // Append a "+ Add a note" toggle + collapsed textarea to the form.
+  // Returns a getter that reads the textarea value (trimmed, or null if
+  // empty / never expanded). Used by single_choice, yes_no, multi_choice
+  // — free_text skips this since its own input already accepts free prose.
+  function renderNoteSection(form) {
+    const wrap = document.createElement("div");
+    wrap.className = "question-note-wrap";
+
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "question-note-toggle";
+    toggle.textContent = "+ Add a note (optional)";
+
+    const ta = document.createElement("textarea");
+    ta.className = "question-note-input";
+    ta.rows = 2;
+    ta.placeholder = "Add caveats, edge cases, or rationale the agent should record alongside your answer…";
+    ta.style.display = "none";
+
+    toggle.addEventListener("click", () => {
+      const isOpen = ta.style.display !== "none";
+      ta.style.display = isOpen ? "none" : "";
+      toggle.textContent = isOpen ? "+ Add a note (optional)" : "– Hide note";
+      if (!isOpen) ta.focus();
+    });
+
+    wrap.appendChild(toggle);
+    wrap.appendChild(ta);
+    form.appendChild(wrap);
+
+    return () => {
+      const v = ta.value.trim();
+      return v || null;
+    };
+  }
+
+  function formatAnswerForDisplay(schema, answer) {
+    if (schema.kind === "yes_no") return answer === "yes" ? "Yes" : "No";
+    if (schema.kind === "single_choice") return answer?.label || answer?.id || "(answer)";
+    if (schema.kind === "multi_choice") return (answer?.labels || []).join(", ") || "(none)";
+    if (schema.kind === "free_text") return answer?.text || "(empty)";
+    return String(answer);
+  }
+
+  async function submitAnswer(schema, rawAnswer, displayText, cardEl, note = null) {
+    if (!chatSessionId) chatSessionId = deriveChatSessionId();
+    if (!chatEventSource) openSseStream(chatSessionId);
+
+    // Lock the card so it can't be submitted twice. We unlock on failure
+    // below so the user can retry rather than being stranded.
+    const lockedInputs = Array.from(cardEl.querySelectorAll("input, button, textarea"));
+    cardEl.classList.add("question-answered");
+    lockedInputs.forEach(el => el.disabled = true);
+
+    // Show the chosen answer as a user message.
+    appendChatMessage("user", displayText);
+
+    const eid = currentProjectId();
+    const agent = chatAgentSelect?.value || "";
+    const data = { question_id: schema.id, kind: schema.kind, answer: rawAnswer };
+    if (note) data.note = note;
+    const body = {
+      text: displayText,
+      data,
+      session_id: chatSessionId,
+    };
+    if (agent) body.agent = agent;
+    if (eid) body.engagement_id = eid;
+
+    try {
+      const res = await fetch("/api/chat/message", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      appendChatMessage("agent", "[error] could not submit answer: " + err.message + " — please retry");
+      // Re-enable so the user can retry; previous user-bubble stays in
+      // history but a fresh click POSTs again with the same payload.
+      cardEl.classList.remove("question-answered");
+      lockedInputs.forEach(el => el.disabled = false);
+    }
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+    })[c]);
   }
 
   function openSseStream(sessionId) {
@@ -1200,6 +1543,18 @@
     const body = { text, session_id: chatSessionId };
     if (agent) body.agent = agent;
     if (eid) body.engagement_id = eid;
+    // If the user deferred a question via "…type a custom answer", tag
+    // this message so the agent can correlate the free-text reply to
+    // the question that asked it.
+    if (pendingDeferredQuestion) {
+      body.data = {
+        question_id: pendingDeferredQuestion.id,
+        kind: pendingDeferredQuestion.kind,
+        answer: { text, custom: true },
+      };
+      pendingDeferredQuestion = null;
+      if (chatInput) chatInput.placeholder = "";
+    }
 
     try {
       await fetch("/api/chat/message", {
