@@ -2391,15 +2391,18 @@
       // were any — keeps the chat tidy after the turn finishes.
       if (pendingAgentMsg.pills.length) {
         const n = pendingAgentMsg.pills.length;
+        // Capture by reference — pendingAgentMsg is set to null below, so
+        // the click handler can't read it later.
+        const pillsContainerRef = pendingAgentMsg.pillsContainer;
         const summary = document.createElement("div");
         summary.className = "activity-pills-summary";
         summary.innerHTML = `<span class="activity-pill-icon">✓</span><span>${n} step${n === 1 ? "" : "s"} (click to expand)</span>`;
         summary.addEventListener("click", () => {
-          pendingAgentMsg?.pillsContainer?.classList.toggle("expanded");
+          pillsContainerRef.classList.toggle("expanded");
           summary.classList.toggle("expanded");
         });
-        pendingAgentMsg.pillsContainer.classList.add("collapsed");
-        pendingAgentMsg.pillsContainer.parentNode.insertBefore(summary, pendingAgentMsg.pillsContainer);
+        pillsContainerRef.classList.add("collapsed");
+        pillsContainerRef.parentNode.insertBefore(summary, pillsContainerRef);
       }
       // Render the final answer in the bubble (or remove the whole turn
       // if there's nothing left to show after stripping question blocks).

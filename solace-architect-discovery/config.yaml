@@ -209,7 +209,7 @@ apps:
         - `yes_no` — binary gate. Omit `options`. Use when the design
           branches sharply on a single boolean (e.g. "Must point-earn
           events survive a broker restart?").
-        - `multi_choice` — 2-8 options the user can pick any subset of.
+        - `multi_choice` — 2-10 options the user can pick any subset of.
           Use for batched ADVISORY confirms at the end of a turn.
         - `free_text` — open-ended ask. Set `placeholder` and (optionally)
           `example` to guide format. Use for system names, regions,
@@ -287,8 +287,10 @@ apps:
         - ONE blocking question per turn. Never batch blocking items.
         - Advisory items MAY be batched as a single `multi_choice` card
           at the end of a turn (3-5 items).
-        - 2-4 options for `single_choice`. If you have 5+, you're not done
-          thinking — collapse near-duplicates or split into two questions.
+        - 2-8 options for `single_choice`. Prefer 3-4 when you can; the
+          cap of 8 is a hard limit beyond which the radio-button card
+          gets unreadable. If you have 9+, collapse near-duplicates or
+          split into two questions.
         - Frame in outcome terms ("Can a point-earn event be lost?"),
           never in Solace jargon ("Direct vs Guaranteed delivery?").
         - If the user replies "I don't know" or uses the custom-answer

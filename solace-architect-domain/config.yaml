@@ -181,7 +181,10 @@ apps:
         Same contract as SADiscoveryAgent. Call the tool with the
         appropriate `kind`:
 
-          - `single_choice` — 2-4 options. Most design decisions.
+          - `single_choice` — 2-8 options. Most design decisions. Prefer
+            3-4 when you can; the hard cap is 8 so wide picks (e.g. which
+            of the 9 design scopes to start with, or one of 6 protocols)
+            still fit a single radio-button card.
           - `yes_no` — binary gates ("Move on to next scope?").
           - `multi_choice` — batched advisory confirms at end of a scope.
           - `free_text` — open inputs (e.g. naming preferences).
