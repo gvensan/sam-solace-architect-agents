@@ -453,18 +453,30 @@
         const discoveryDone = discoveryStatus === "DONE" || discoveryStatus === "DONE_WITH_CONCERNS";
         const discoveryInProgress = !discoveryDone && (hasDiscoveryBrief || openItemsCount > 0 || hasDiscoverySummary);
 
+        // Same for Design — driven by SADomainAgent's set_step_status calls.
+        const designStatus = lifecycle?.steps?.design?.status || "NOT_STARTED";
+        const designNote = lifecycle?.steps?.design?.note || "";
+        const designDone = designStatus === "DONE" || designStatus === "DONE_WITH_CONCERNS";
+        // Any artifact under a Domain scope folder means design is mid-flow.
+        const designScopes = ["topic-design","broker-select","protocol-select","integration","mesh-design","ha-dr","sam-design","event-portal","migration"];
+        const hasDesignArtifact = artifacts.some(a => designScopes.some(s => a.startsWith(s + "/")));
+        const designInProgress = !designDone && (hasDesignArtifact || designStatus === "NEEDS_CONTEXT");
+
         // Active step on the lifecycle banner.
-        const activeStepId = discoveryDone ? "design"
+        const activeStepId = designDone ? "review"
+          : (designInProgress || discoveryDone) ? "design"
           : (discoveryInProgress || hasIntake) ? "discovery"
           : "intake";
         const completedSteps = new Set();
         if (hasIntake) completedSteps.add("intake");
         if (discoveryDone) completedSteps.add("discovery");
+        if (designDone) completedSteps.add("design");
 
         // One contextual CTA, always shown — content depends on lifecycle state.
         const cta = renderProgressCta({
           eid, hasIntake, discoveryStatus, discoveryNote,
           discoveryInProgress, openItemsCount,
+          designStatus, designNote, designDone, designInProgress,
         });
 
         root.innerHTML = `
@@ -795,14 +807,16 @@
   // confusion ("I see the banner but what should I do") by giving a
   // single primary action keyed to the current step + status.
   //
-  // States covered:
-  //   - no intake             → link to /intake (defensive — overview only
-  //                              renders for projects with intake)
-  //   - intake, not started   → Start Discovery (primes chat)
-  //   - in progress           → Continue in chat (status, opens panel)
-  //   - DONE / DONE_WITH_CONCERNS → View brief + Restart Discovery
+  // States covered (in order — the first matching branch wins):
+  //   - no intake               → link to /intake
+  //   - Design DONE             → Restart Design (Review CTA placeholder)
+  //   - Design in progress      → Continue Design in chat
+  //   - Discovery DONE          → Start Design (the canonical handoff)
+  //   - Discovery in progress   → Continue Discovery in chat
+  //   - Intake exists, idle     → Start Discovery
   function renderProgressCta({
     eid, hasIntake, discoveryStatus, discoveryNote, discoveryInProgress, openItemsCount,
+    designStatus, designNote, designDone, designInProgress,
   }) {
     if (!hasIntake) {
       return `
@@ -819,22 +833,67 @@
         </div>`;
     }
 
-    const done = discoveryStatus === "DONE" || discoveryStatus === "DONE_WITH_CONCERNS";
+    const discoveryDone = discoveryStatus === "DONE" || discoveryStatus === "DONE_WITH_CONCERNS";
 
-    if (done) {
+    // Design DONE — Review will come next when that agent lands.
+    if (designDone) {
+      const badge = designStatus === "DONE_WITH_CONCERNS"
+        ? `<span class="status-badge advisory">Done with concerns</span>`
+        : `<span class="status-badge done">Done</span>`;
+      return `
+        <div class="progress-cta done" role="region" aria-label="Design complete">
+          <div class="progress-cta-body">
+            <div class="progress-cta-eyebrow">Design → Review</div>
+            <h2>Design is complete ${badge}</h2>
+            ${designNote ? `<p>${escapeHtml(designNote)}</p>` : ""}
+            <p>Next step: <strong>Review</strong>. The reviewer agents
+            (architect, developer, ops, security) will audit your design
+            artifacts. Review agent isn't wired up yet — for now you can
+            inspect the design output on the Artifacts tab.</p>
+          </div>
+          <div class="progress-cta-actions progress-cta-actions-row">
+            <a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View design →</a>
+            <button id="restart-design-btn" class="cta-btn cta-btn-danger">Restart Design…</button>
+          </div>
+        </div>`;
+    }
+
+    // Design in progress — agent is mid-flow through scopes.
+    if (designInProgress) {
+      return `
+        <div class="progress-cta in-progress" role="region" aria-label="Design in progress">
+          <div class="progress-cta-body">
+            <div class="progress-cta-eyebrow">Design in progress</div>
+            <h2>Continue Design in chat</h2>
+            <p>SADomainAgent is working through the design scopes.
+            ${designNote ? `<em>${escapeHtml(designNote)}</em> ` : ""}
+            Open the chat panel and answer the next form — each scope's
+            artifact appears on the Artifacts tab as the agent finishes.</p>
+          </div>
+          <div class="progress-cta-actions progress-cta-actions-row">
+            <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
+            <button id="restart-design-btn" class="cta-btn cta-btn-danger">Restart Design…</button>
+          </div>
+        </div>`;
+    }
+
+    if (discoveryDone) {
       const badge = discoveryStatus === "DONE_WITH_CONCERNS"
         ? `<span class="status-badge advisory">Done with concerns</span>`
         : `<span class="status-badge done">Done</span>`;
       return `
         <div class="progress-cta done" role="region" aria-label="Discovery complete">
           <div class="progress-cta-body">
-            <div class="progress-cta-eyebrow">Discovery</div>
+            <div class="progress-cta-eyebrow">Discovery → Design</div>
             <h2>Discovery is complete ${badge}</h2>
             ${discoveryNote ? `<p>${escapeHtml(discoveryNote)}</p>` : ""}
-            <p>You can review the brief on the Artifacts tab, or restart Discovery
-            from scratch if you want to re-run the questions with different inputs.</p>
+            <p>Next step: <strong>Design</strong>. SADomainAgent will walk you
+            through the nine design scopes (topic taxonomy, broker selection,
+            protocols, integration, mesh, HA/DR, SAM, event-portal, migration),
+            confirming each decision with you as an interactive form.</p>
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
+            <button id="start-design-btn" class="cta-btn">Start Design →</button>
             <a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View brief →</a>
             <button id="restart-discovery-btn" class="cta-btn cta-btn-danger">Restart Discovery…</button>
           </div>
@@ -877,20 +936,38 @@
 
   // Wire click handlers on whichever progress-CTA buttons exist this render.
   function wireProgressCtaActions(root, eid) {
-    const openChatWith = (text) => {
+    const openChatWith = (text, agent) => {
       applyChat("open");
+      // Flip the chat agent selector before priming so the message
+      // dispatches to the right agent (Discovery → Domain on handoff).
+      if (agent) {
+        const sel = document.getElementById("chat-agent-select");
+        if (sel) {
+          const opt = Array.from(sel.options).find(o => o.value === agent);
+          if (opt) sel.value = agent;
+        }
+      }
       const ci = document.getElementById("chat-input");
       if (ci) {
         if (text) ci.value = text;
         ci.focus();
+        if (text) chatForm.requestSubmit?.();
       }
     };
     root.querySelector("#start-discovery-btn")?.addEventListener("click", () =>
-      openChatWith("Let's start discovery — please review the intake and ask your first follow-up."));
+      openChatWith(
+        "Let's start discovery — please review the intake and ask your first follow-up.",
+        "SADiscoveryAgent"));
     root.querySelector("#continue-in-chat-btn")?.addEventListener("click", () =>
-      openChatWith(""));
+      openChatWith("", null));
+    root.querySelector("#start-design-btn")?.addEventListener("click", () =>
+      openChatWith(
+        "Discovery is complete. Read the discovery brief and walk me through the first design scope (topic taxonomy by default, or ask me which scope to start with).",
+        "SADomainAgent"));
     root.querySelector("#restart-discovery-btn")?.addEventListener("click", () =>
       openRestartDiscoveryModal(eid));
+    root.querySelector("#restart-design-btn")?.addEventListener("click", () =>
+      openRestartDesignModal(eid));
   }
 
   // Restart Discovery — destructive action; uses a typed-id confirmation
@@ -937,6 +1014,61 @@
       } catch (err) {
         btn.disabled = false;
         btn.textContent = "Restart Discovery";
+        alert(`Restart failed: ${err.message}`);
+      }
+    });
+  }
+
+  // Restart Design — mirrors Restart Discovery. Wipes every artifact
+  // under the nine SADomainAgent scope folders, supersedes any
+  // domain-source open-items, and clears the design entry in
+  // engagement-status.yaml. Decisions are intentionally preserved
+  // (immutable audit trail).
+  function openRestartDesignModal(eid) {
+    openModal(`
+      <div class="modal-section">
+        <h2>Restart Design for <code>${escapeHtml(eid)}</code>?</h2>
+        <p>This will:</p>
+        <ul style="margin: 6px 0 12px 18px; font-size: 13px; line-height: 1.6;">
+          <li>delete every artifact under <code>topic-design/</code>,
+              <code>broker-select/</code>, <code>protocol-select/</code>,
+              <code>integration/</code>, <code>mesh-design/</code>,
+              <code>ha-dr/</code>, <code>sam-design/</code>,
+              <code>event-portal/</code>, and <code>migration/</code></li>
+          <li>mark any open-items recorded by Domain as <code>superseded</code></li>
+          <li>clear the Design entry in <code>meta/engagement-status.yaml</code></li>
+        </ul>
+        <p>Your discovery brief is <strong>not</strong> touched. Recorded
+        decisions in <code>meta/decisions.yaml</code> are <strong>preserved</strong>
+        as an audit trail — your next design pass can revisit or override them.</p>
+        <p style="margin-top: 12px;">Type the project id <code>${escapeHtml(eid)}</code>
+        to confirm:</p>
+        <input id="restart-design-confirm-input" type="text" autocomplete="off"
+               style="width: 100%; padding: 8px 10px; font-family: 'Space Mono', monospace;
+                      font-size: 13px; border: 1px solid var(--border); border-radius: 4px;
+                      margin-top: 6px;">
+        <div class="modal-actions" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px;">
+          <button class="cta-btn cta-btn-secondary" data-modal-close>Cancel</button>
+          <button id="restart-design-confirm-btn" class="cta-btn cta-btn-danger" disabled>Restart Design</button>
+        </div>
+      </div>`, { focus: "#restart-design-confirm-input" });
+
+    const input = document.getElementById("restart-design-confirm-input");
+    const btn = document.getElementById("restart-design-confirm-btn");
+    input?.addEventListener("input", () => {
+      btn.disabled = input.value.trim() !== eid;
+    });
+    btn?.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "Restarting…";
+      try {
+        const res = await fetch(`/api/engagements/${encodeURIComponent(eid)}/design`, { method: "DELETE" });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        closeModal();
+        render();
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = "Restart Design";
         alert(`Restart failed: ${err.message}`);
       }
     });
@@ -1493,12 +1625,14 @@
     const hasDiscoveryBrief = artifacts.includes("discovery/discovery-brief.yaml");
     const openItemsCount = (stats.open_items_blocking || 0) + (stats.open_items_advisory || 0);
     const discoveryInProgress = !discoveryDone && (hasDiscoveryBrief || openItemsCount > 0);
+    const designStatus = lifecycle?.steps?.design?.status || "NOT_STARTED";
+    const designDone = designStatus === "DONE" || designStatus === "DONE_WITH_CONCERNS";
 
     // Lifecycle steps in order — used to find current + next.
     const steps = [
       { id: "intake",     label: "Intake",        done: hasIntake },
       { id: "discovery",  label: "Discovery",     done: discoveryDone },
-      { id: "design",     label: "Design",        done: false },
+      { id: "design",     label: "Design",        done: designDone },
       { id: "review",     label: "Review",        done: false },
       { id: "validation", label: "Validation",    done: false },
       { id: "blueprint",  label: "Blueprint",     done: false },
@@ -1507,16 +1641,30 @@
     const lastDone = [...steps].reverse().find(s => s.done);
     const currentLabel = firstUnfinished ? firstUnfinished.label : "Complete";
 
-    // Decide the primary action button per state.
+    // Decide the primary action button per state. `agent` field tells
+    // the click handler which agent to switch the chat dropdown to
+    // before priming the message — important on the Discovery → Design
+    // handoff so the user doesn't have to flip the dropdown manually.
     let action = null;
     if (!hasIntake) {
       action = { label: "Open intake form →", href: `/intake/edit/${encodeURIComponent(eid)}` };
     } else if (!discoveryDone && !discoveryInProgress) {
-      action = { label: "Start Discovery →", prime: "Let's start discovery — please review the intake and ask your first follow-up." };
+      action = {
+        label: "Start Discovery →",
+        agent: "SADiscoveryAgent",
+        prime: "Let's start discovery — please review the intake and ask your first follow-up.",
+      };
     } else if (discoveryInProgress) {
-      action = { label: "Continue Discovery →", prime: "" };
+      action = { label: "Continue Discovery →", agent: "SADiscoveryAgent", prime: "" };
     } else if (discoveryDone) {
-      action = { label: "Ask about the brief →", prime: "Summarize the key findings from discovery and what design decisions are next." };
+      // Discovery done → next step is Design. Switch to SADomainAgent
+      // and prime a kickoff message that asks it to read the brief and
+      // walk through the first scope.
+      action = {
+        label: "Start Design →",
+        agent: "SADomainAgent",
+        prime: "Discovery is complete. Read the discovery brief and walk me through the first design scope (topic taxonomy by default, or ask me which scope to start with).",
+      };
     }
 
     const noteLine = discoveryNote ? `<p class="welcome-note">${escapeHtml(discoveryNote)}</p>` : "";
@@ -1543,7 +1691,9 @@
         ${action ? `<div class="welcome-actions">
           ${action.href
             ? `<a class="cta-btn welcome-action" href="${action.href}">${escapeHtml(action.label)}</a>`
-            : `<button class="cta-btn welcome-action" data-prime="${escapeHtml(action.prime || "")}">${escapeHtml(action.label)}</button>`}
+            : `<button class="cta-btn welcome-action"
+                       data-prime="${escapeHtml(action.prime || "")}"
+                       data-agent="${escapeHtml(action.agent || "")}">${escapeHtml(action.label)}</button>`}
         </div>` : ""}
         <p class="welcome-hint">Or just type your question below — the agent has full project context.</p>
       </div>`;
@@ -1551,13 +1701,29 @@
     chatLog.querySelectorAll(".welcome-action[data-prime]").forEach(btn => {
       btn.addEventListener("click", () => {
         const prime = btn.getAttribute("data-prime") || "";
+        const agent = btn.getAttribute("data-agent") || "";
         applyChat("open");
+        // Switch the chat agent dropdown before priming so the message
+        // is dispatched to the right agent (e.g. Discovery → Domain
+        // handoff when Discovery is DONE).
+        if (agent) {
+          const sel = document.getElementById("chat-agent-select");
+          if (sel) {
+            const opt = Array.from(sel.options).find(o => o.value === agent);
+            if (opt) sel.value = agent;
+            // If the option doesn't exist yet (agent discovery still
+            // catching up), fall back: the chat POST handler accepts
+            // an agent name even if the dropdown doesn't list it yet,
+            // so we still send the agent param via the form body.
+          }
+        }
         if (chatInput) {
           chatInput.value = prime;
           chatInput.focus();
           if (prime) {
             // Auto-submit primed messages so the user doesn't have to
-            // hit Send themselves — this is the "Start Discovery" flow.
+            // hit Send themselves — this is the "Start Discovery" /
+            // "Start Design" handoff flow.
             chatForm.requestSubmit?.();
           }
         }
@@ -1619,15 +1785,25 @@
       const openItemsCount = (stats.open_items_blocking || 0) + (stats.open_items_advisory || 0);
       const hasDiscoveryBrief = artifacts.includes("discovery/discovery-brief.yaml");
       const discoveryInProgress = !discoveryDone && (hasDiscoveryBrief || openItemsCount > 0);
+      const designStatus = lifecycle?.steps?.design?.status || "NOT_STARTED";
+      const designDone = designStatus === "DONE" || designStatus === "DONE_WITH_CONCERNS";
+      const designScopes = ["topic-design","broker-select","protocol-select","integration","mesh-design","ha-dr","sam-design","event-portal","migration"];
+      const hasDesignArtifact = artifacts.some(a => designScopes.some(s => a.startsWith(s + "/")));
+      const designInProgress = !designDone && (hasDesignArtifact || designStatus === "NEEDS_CONTEXT");
       const steps = [
         { id: "intake", label: "Intake", done: hasIntake },
         { id: "discovery", label: "Discovery", done: discoveryDone },
-        { id: "design", label: "Design", done: false },
+        { id: "design", label: "Design", done: designDone },
+        { id: "review", label: "Review", done: false },
       ];
       const firstUnfinished = steps.find(s => !s.done);
       const lastDone = [...steps].reverse().find(s => s.done);
+      // Pass overall "in progress" so the dot animates while any step's mid-flow.
+      const anyInProgress = discoveryInProgress || designInProgress;
       updateLifecycleBar({
-        eid, hasIntake, discoveryDone, discoveryInProgress,
+        eid, hasIntake,
+        discoveryDone: discoveryDone || designDone,  // shows "done" tint past discovery
+        discoveryInProgress: anyInProgress,
         currentLabel: firstUnfinished?.label || "Complete",
         lastDoneLabel: lastDone?.label,
       });

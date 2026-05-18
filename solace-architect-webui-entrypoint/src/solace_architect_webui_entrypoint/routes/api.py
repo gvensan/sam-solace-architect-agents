@@ -154,6 +154,64 @@ async def reset_discovery(engagement_id: str) -> Any:
     return {"removed_artifacts": removed, "open_items_superseded": superseded}
 
 
+# Folders SADomainAgent writes into — one per design scope.
+_DESIGN_SCOPE_FOLDERS = (
+    "topic-design", "broker-select", "protocol-select", "integration",
+    "mesh-design", "ha-dr", "sam-design", "event-portal", "migration",
+)
+
+
+async def reset_design(engagement_id: str) -> Any:
+    """Hard-reset the design step.
+
+    Removes every artifact under the nine SADomainAgent scope folders
+    (topic-design/, broker-select/, ..., migration/) and clears the
+    design entry in meta/engagement-status.yaml.
+
+    Open-items with source='domain' are marked as superseded (mirrors
+    reset_discovery's pattern).
+
+    Decisions in meta/decisions.yaml are intentionally NOT touched —
+    they're an immutable audit trail; a fresh design pass should be
+    aware of prior decisions and choose whether to confirm or revise.
+    """
+    removed = []
+    # list_artifacts(engagement_id, category=<scope>) returns names like
+    # "<scope>/foo.yaml"; iterate each and delete via safe_artifact_path.
+    for scope in _DESIGN_SCOPE_FOLDERS:
+        try:
+            res = await artifact_tools.list_artifacts(engagement_id, category=scope)
+            if not res.ok or not res.data:
+                continue
+            for name in res.data:
+                try:
+                    path = safe_artifact_path(engagement_id, name)
+                    if path.exists():
+                        path.unlink()
+                        removed.append(name)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # Clear status entry
+    await lifecycle_tools.clear_step_status(engagement_id, "design")
+
+    # Supersede domain-sourced open-items
+    items_res = await decision_tools.read_open_items(engagement_id, source="domain")
+    superseded = 0
+    if items_res.ok and items_res.data:
+        for item in items_res.data:
+            if item.get("status") == "open":
+                await decision_tools.update_open_item_status(
+                    engagement_id, item_id=item["id"], new_status="superseded",
+                    resolution_note="Superseded by Design restart",
+                )
+                superseded += 1
+
+    return {"removed_artifacts": removed, "open_items_superseded": superseded}
+
+
 # ----- Intake -----
 
 async def intake_preview(**partial_intake) -> Any:
@@ -359,6 +417,7 @@ API_ROUTES = [
     ("GET",  "/api/engagements/{engagement_id}/artifacts/{name}", get_artifact),
     ("GET",  "/api/engagements/{engagement_id}/lifecycle",    get_engagement_lifecycle),
     ("DELETE","/api/engagements/{engagement_id}/discovery",   reset_discovery),
+    ("DELETE","/api/engagements/{engagement_id}/design",      reset_design),
     # Intake
     ("POST", "/api/intake/preview",                           intake_preview),
     ("GET",  "/api/intake/download-yaml",                     intake_download_yaml),
