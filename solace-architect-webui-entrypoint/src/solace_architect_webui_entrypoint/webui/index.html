@@ -113,6 +113,12 @@
           <button id="chat-close" class="icon-btn" title="Close chat" aria-label="Close chat">×</button>
         </div>
       </div>
+      <!-- Lifecycle state strip — hidden when no project is active. Always
+           visible above the scrollable chat log so the user can see "Step:
+           Discovery DONE · Next: Design" without scrolling to the welcome
+           card. Updated by syncLifecycleBar() on visit + every 10s by the
+           Progress auto-refresh. -->
+      <div id="chat-lifecycle-bar" class="chat-lifecycle-bar hidden" aria-hidden="true"></div>
       <div id="chat-log" class="chat-log">
         <div class="chat-empty">
           <p>Conversational interaction with any agent on the SAM mesh.</p>

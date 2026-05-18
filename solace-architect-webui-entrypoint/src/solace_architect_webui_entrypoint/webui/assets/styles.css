@@ -937,3 +937,221 @@ pre {
   .header-actions .version { display: none; }
   .chat-toggle-btn .chat-toggle-label { display: none; }
 }
+
+/* ============================================================================
+ * Artifacts page — summary card + by-category bar chart + right-rail
+ * grouped file list + smart per-format content viewer.
+ * ============================================================================ */
+.artifacts-page { display: grid; grid-template-columns: 1fr 240px; gap: 24px; align-items: start; }
+.artifacts-main { min-width: 0; }
+.artifacts-eyebrow {
+  font-family: 'Space Mono', monospace; font-size: 11px;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted, #888);
+  margin-bottom: 4px;
+}
+
+.artifacts-summary {
+  margin: 12px 0 24px;
+  padding: 18px 22px;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg);
+}
+.artifacts-summary-row { display: flex; gap: 24px; align-items: stretch; }
+.artifacts-count-tile {
+  flex-shrink: 0; min-width: 140px;
+  padding: 16px 20px;
+  border: 1px solid var(--border); border-radius: 8px;
+  display: flex; flex-direction: column; justify-content: center;
+  background: var(--bg);
+}
+.artifacts-count-eyebrow {
+  font-family: 'Space Mono', monospace; font-size: 10px;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted, #888);
+}
+.artifacts-count-number { font-size: 36px; font-weight: 700; color: var(--accent); line-height: 1.1; }
+.artifacts-count-label { font-size: 12px; color: var(--muted, #888); }
+
+.artifacts-bars { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.artifacts-bars-title {
+  font-family: 'Space Mono', monospace; font-size: 11px;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted, #888);
+  margin-bottom: 4px;
+}
+.artifacts-bar-row {
+  display: grid; grid-template-columns: 100px 1fr 30px;
+  gap: 10px; align-items: center; font-size: 12px;
+}
+.artifacts-bar-label { font-family: 'Space Mono', monospace; color: var(--text); text-align: right; }
+.artifacts-bar-track {
+  height: 14px; background: rgba(0,0,0,0.04); border-radius: 3px; overflow: hidden;
+}
+.artifacts-bar-fill { height: 100%; background: var(--accent); border-radius: 3px; }
+.artifacts-bar-count { font-family: 'Space Mono', monospace; color: var(--muted, #888); text-align: left; }
+
+.artifacts-rail {
+  padding: 18px 20px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg); position: sticky; top: 12px;
+  max-height: calc(100vh - 100px); overflow-y: auto;
+}
+.artifacts-rail-title {
+  font-family: 'Space Mono', monospace; font-size: 11px;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted, #888);
+  margin-bottom: 10px;
+}
+.artifacts-rail-group { margin-bottom: 14px; }
+.artifacts-rail-group-title {
+  font-family: 'Space Mono', monospace; font-size: 10px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent);
+  margin-bottom: 4px;
+}
+.artifacts-rail-link {
+  display: block; padding: 4px 8px; margin: 1px 0;
+  font-family: 'Space Mono', monospace; font-size: 12px;
+  color: var(--text); text-decoration: none;
+  border-radius: 4px;
+}
+.artifacts-rail-link:hover { background: rgba(0,0,0,0.04); color: var(--primary); }
+.artifacts-rail-link.active {
+  background: var(--accent); color: var(--primary); font-weight: 600;
+}
+
+.artifacts-viewer {
+  margin-top: 12px; padding: 18px 22px;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg); min-height: 200px;
+}
+.artifacts-viewer-hint { color: var(--muted, #888); font-size: 13px; }
+.artifacts-viewer-title {
+  font-family: 'Space Mono', monospace; font-size: 13px;
+  margin: 0 0 12px; color: var(--primary);
+}
+.artifacts-viewer-pre {
+  margin: 0; padding: 12px 14px;
+  background: rgba(0,0,0,0.03); border-radius: 6px;
+  font-family: 'Space Mono', monospace; font-size: 12px;
+  line-height: 1.55; white-space: pre-wrap; word-wrap: break-word;
+  max-height: 60vh; overflow: auto;
+}
+.artifacts-viewer-md { font-size: 13px; line-height: 1.55; }
+.artifacts-viewer-md h1 { font-size: 18px; margin-top: 0; }
+.artifacts-viewer-md h2 { font-size: 16px; }
+.artifacts-viewer-md h3 { font-size: 14px; }
+.artifacts-viewer-md code { background: rgba(0,0,0,0.05); padding: 1px 5px; border-radius: 3px; font-family: 'Space Mono', monospace; font-size: 12px; }
+.artifacts-viewer-md pre { background: rgba(0,0,0,0.05); padding: 10px 12px; border-radius: 4px; overflow-x: auto; }
+.artifacts-viewer-md table { border-collapse: collapse; margin: 8px 0; font-size: 12px; }
+.artifacts-viewer-md th, .artifacts-viewer-md td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+
+/* Light syntax tint for YAML / JSON. Keys = accent, strings = default,
+   numbers/booleans = contrast, comments = dim. Intentionally minimal. */
+.art-yaml-key, .art-json-key { color: var(--accent); font-weight: 600; }
+.art-yaml-punct { color: var(--muted, #888); }
+.art-yaml-bool, .art-json-bool { color: #b58900; font-weight: 600; }
+.art-yaml-num, .art-json-num { color: #268bd2; }
+.art-yaml-comment { color: var(--muted, #888); font-style: italic; }
+.art-json-string { color: #2aa198; }
+
+@media (max-width: 900px) {
+  .artifacts-page { grid-template-columns: 1fr; }
+  .artifacts-summary-row { flex-direction: column; }
+  .artifacts-rail { position: static; max-height: none; }
+}
+
+/* Welcome card — first agent message when chat is empty + a project is
+   active. Replaces the generic "Conversational interaction with…" prose
+   with engagement state + a primary action. */
+.chat-msg.agent.welcome-card {
+  max-width: 95%;
+  padding: 14px 16px;
+  border-left: 3px solid var(--accent);
+  display: flex; flex-direction: column; gap: 8px;
+  white-space: normal;
+}
+.welcome-eyebrow {
+  font-family: 'Space Mono', monospace; font-size: 11px;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--accent);
+}
+.welcome-title { font-weight: 700; font-size: 15px; color: var(--primary); }
+.welcome-state-row { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 4px; }
+.welcome-state-label {
+  font-family: 'Space Mono', monospace; font-size: 10px;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted, #888);
+}
+.welcome-state-value { font-size: 13px; font-weight: 600; color: var(--text); margin-top: 2px; }
+.welcome-note {
+  font-size: 12px; color: var(--text); font-style: italic;
+  padding: 6px 10px; background: rgba(0,0,0,0.03); border-radius: 4px;
+}
+.welcome-actions { margin-top: 4px; }
+.welcome-action {
+  display: inline-block; font-size: 13px; padding: 6px 14px;
+  background: var(--accent); color: var(--primary); border: none; border-radius: 6px;
+  cursor: pointer; text-decoration: none; font-weight: 600;
+  font-family: inherit;
+}
+.welcome-action:hover { background: var(--primary); color: var(--accent); }
+.welcome-hint { font-size: 11px; color: var(--muted, #888); margin: 0; }
+
+/* Sticky lifecycle bar — one-line indicator above the chat scroll, always
+   visible while a project is active. Updated by refreshLifecycleBar(). */
+.chat-lifecycle-bar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.chat-lifecycle-bar.hidden { display: none; }
+.chat-lifecycle-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--muted, #888);
+  flex-shrink: 0;
+}
+.chat-lifecycle-dot.ready { background: var(--accent); }
+.chat-lifecycle-dot.in-progress {
+  background: var(--accent);
+  animation: lifecycle-pulse 1.5s ease-in-out infinite;
+}
+.chat-lifecycle-dot.done { background: var(--accent); box-shadow: 0 0 0 2px rgba(0,200,149,0.2); }
+.chat-lifecycle-dot.waiting { background: #b58900; }
+@keyframes lifecycle-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+.chat-lifecycle-text { color: var(--text); }
+.chat-lifecycle-text strong { color: var(--primary); font-weight: 600; }
+
+/* Activity pills — accumulating "what the agent is doing right now"
+   stream rendered inside the agent's thinking bubble during a turn. */
+.agent-turn { padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; }
+.activity-pills { display: flex; flex-direction: column; gap: 4px; }
+.activity-pills.collapsed { display: none; }
+.activity-pills.collapsed.expanded { display: flex; }
+.activity-pill {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 10px;
+  background: rgba(0,0,0,0.03); border-radius: 12px;
+  font-size: 12px; color: var(--text);
+  align-self: flex-start; max-width: 100%;
+}
+.activity-pill-icon {
+  font-family: 'Space Mono', monospace; font-size: 11px;
+  width: 14px; text-align: center; flex-shrink: 0;
+}
+.activity-pill-text { line-height: 1.3; }
+.activity-pill.in-progress {
+  background: rgba(0,200,149,0.08); color: var(--primary);
+}
+.activity-pill.in-progress .activity-pill-icon {
+  animation: pill-spin 1.2s linear infinite;
+}
+@keyframes pill-spin { from { transform: rotate(0); } to { transform: rotate(360deg); } }
+.activity-pill.done .activity-pill-icon { color: var(--accent); }
+.activity-pills-summary {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 10px; background: rgba(0,0,0,0.03); border-radius: 12px;
+  font-size: 11px; color: var(--muted, #888); cursor: pointer;
+  align-self: flex-start;
+}
+.activity-pills-summary:hover { background: rgba(0,0,0,0.06); }
+.activity-pills-summary.expanded .activity-pill-icon { transform: rotate(90deg); }
+.agent-turn-text:empty { display: none; }

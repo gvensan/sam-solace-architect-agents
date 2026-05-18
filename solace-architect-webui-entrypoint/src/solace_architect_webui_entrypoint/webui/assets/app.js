@@ -307,7 +307,25 @@
       // Silent re-render — same VIEWS.overview, fetches fresh data.
       const content = document.getElementById("content");
       if (content) VIEWS.overview(content, eid);
+      // Also refresh the sticky chat lifecycle bar so it tracks state.
+      refreshLifecycleBar();
     }, PROGRESS_REFRESH_MS);
+  }
+
+  // Separate lighter-weight refresh timer for the chat lifecycle bar
+  // that runs on ANY view (not just Progress) so the bar stays current
+  // while the user is on Requirements, Decisions, etc. Slower cadence
+  // since it's just one indicator strip.
+  let lifecycleBarTimer = null;
+  function armLifecycleBarRefresh() {
+    if (lifecycleBarTimer) clearInterval(lifecycleBarTimer);
+    lifecycleBarTimer = setInterval(() => {
+      if (document.hidden) return;
+      if (!currentProjectId()) return;
+      // Skip if Progress is already polling — its tick covers the bar.
+      if (currentView() === "overview" && progressRefreshTimer) return;
+      refreshLifecycleBar();
+    }, 15000);
   }
 
   // Catch visibility-return so the user sees fresh state the moment
@@ -327,6 +345,9 @@
     const projectNav = document.getElementById("project-nav");
 
     renderSidebarProjects();
+    // Lifecycle bar reflects current path's project on every render.
+    refreshLifecycleBar();
+    if (!lifecycleBarTimer) armLifecycleBarRefresh();
 
     const eid = currentProjectId();
     if (eid) {
@@ -564,15 +585,92 @@
 
     artifacts: async (root, eid) => {
       const names = await fetch(`/api/engagements/${encodeURIComponent(eid)}/artifacts`).then(r => r.json());
-      root.innerHTML = `<h1>Artifacts</h1>${names.length === 0 ? "<p>No artifacts yet.</p>" :
-        `<ul>${names.map(n => `<li><a href="#" data-art="${escapeHtml(n)}">${escapeHtml(n)}</a></li>`).join("")}</ul>
-         <div id="art-view"></div>`}`;
+
+      if (!names.length) {
+        root.innerHTML = `<div class="welcome"><h1>Artifacts</h1><p>No artifacts yet. They'll appear here as agents complete their steps.</p></div>`;
+        return;
+      }
+
+      // Group files by their top-level folder (discovery / meta / design /
+      // …). Files with no folder go under "other".
+      const groups = {};
+      for (const n of names) {
+        const slash = n.indexOf("/");
+        const cat = slash > 0 ? n.slice(0, slash) : "other";
+        (groups[cat] ||= []).push(n);
+      }
+      const cats = Object.keys(groups).sort();
+      const total = names.length;
+
+      // By-category counts for the summary bar chart. Find the max so we
+      // can normalise bar widths.
+      const counts = cats.map(c => ({ cat: c, n: groups[c].length }));
+      const maxN = Math.max(...counts.map(c => c.n));
+
+      root.innerHTML = `
+        <div class="artifacts-page">
+          <div class="artifacts-main">
+            <div class="artifacts-eyebrow">${total} FILE${total === 1 ? "" : "S"}</div>
+            <h1>Artifacts</h1>
+
+            <div class="artifacts-summary">
+              <div class="artifacts-summary-row">
+                <div class="artifacts-count-tile">
+                  <div class="artifacts-count-eyebrow">TOTAL</div>
+                  <div class="artifacts-count-number">${total}</div>
+                  <div class="artifacts-count-label">file${total === 1 ? "" : "s"}</div>
+                </div>
+                <div class="artifacts-bars">
+                  <div class="artifacts-bars-title">By category</div>
+                  ${counts.map(c => `
+                    <div class="artifacts-bar-row">
+                      <div class="artifacts-bar-label">${escapeHtml(c.cat)}</div>
+                      <div class="artifacts-bar-track">
+                        <div class="artifacts-bar-fill" style="width: ${(c.n / maxN * 100).toFixed(1)}%"></div>
+                      </div>
+                      <div class="artifacts-bar-count">${c.n}</div>
+                    </div>
+                  `).join("")}
+                </div>
+              </div>
+            </div>
+
+            <div id="art-view" class="artifacts-viewer">
+              <p class="artifacts-viewer-hint">Select a file from the sidebar to view its contents.</p>
+            </div>
+          </div>
+
+          <aside class="artifacts-rail">
+            <div class="artifacts-rail-title">FILES</div>
+            ${cats.map(c => `
+              <div class="artifacts-rail-group">
+                <div class="artifacts-rail-group-title">${escapeHtml(c.toUpperCase())}</div>
+                ${groups[c].map(n => {
+                  const fname = n.slice(n.indexOf("/") + 1);
+                  return `<a href="#" data-art="${escapeHtml(n)}" class="artifacts-rail-link">${escapeHtml(fname)}</a>`;
+                }).join("")}
+              </div>
+            `).join("")}
+          </aside>
+        </div>
+      `;
+
       root.querySelectorAll("a[data-art]").forEach(a => {
         a.addEventListener("click", async (e) => {
           e.preventDefault();
-          const r = await fetch(`/api/engagements/${encodeURIComponent(eid)}/artifacts/${encodeURIComponent(a.dataset.art)}`);
-          const c = await r.text();
-          document.getElementById("art-view").innerHTML = `<h2>${escapeHtml(a.dataset.art)}</h2><pre>${escapeHtml(c)}</pre>`;
+          // Highlight the active file in the rail.
+          root.querySelectorAll(".artifacts-rail-link").forEach(l => l.classList.remove("active"));
+          a.classList.add("active");
+          const name = a.dataset.art;
+          const view = document.getElementById("art-view");
+          view.innerHTML = `<p class="artifacts-viewer-hint">Loading ${escapeHtml(name)}…</p>`;
+          try {
+            const r = await fetch(`/api/engagements/${encodeURIComponent(eid)}/artifacts/${encodeURIComponent(name)}`);
+            const c = await r.text();
+            view.innerHTML = renderArtifactContent(name, c);
+          } catch (err) {
+            view.innerHTML = `<p class="artifacts-viewer-hint">Could not load: ${escapeHtml(err.message || err)}</p>`;
+          }
         });
       });
     },
@@ -598,6 +696,60 @@
         <button class="copy-btn" onclick="window.__downloadZip('${eid}')">Download zip</button>`;
     },
   };
+
+  // Smart per-format renderer for an artifact's content. Used by the
+  // Artifacts page viewer.
+  //   .md       → marked.js rendered HTML (sanitised via DOMPurify)
+  //   .yaml/.yml/.json → monospace block with light syntax coloring (no external lib)
+  //   anything else    → preformatted plain text
+  function renderArtifactContent(filename, content) {
+    const lower = filename.toLowerCase();
+    const head = `<h2 class="artifacts-viewer-title">${escapeHtml(filename)}</h2>`;
+    let body;
+    if (lower.endsWith(".md") && typeof marked !== "undefined" && typeof DOMPurify !== "undefined") {
+      try {
+        const html = marked.parse(content, { breaks: true, gfm: true });
+        body = `<div class="artifacts-viewer-md">${DOMPurify.sanitize(html)}</div>`;
+      } catch {
+        body = `<pre class="artifacts-viewer-pre">${escapeHtml(content)}</pre>`;
+      }
+    } else if (lower.endsWith(".yaml") || lower.endsWith(".yml")) {
+      body = `<pre class="artifacts-viewer-pre artifacts-viewer-yaml">${highlightYaml(content)}</pre>`;
+    } else if (lower.endsWith(".json")) {
+      // Pretty-print if it parses; otherwise show raw.
+      let display = content;
+      try { display = JSON.stringify(JSON.parse(content), null, 2); } catch {}
+      body = `<pre class="artifacts-viewer-pre artifacts-viewer-json">${highlightJson(display)}</pre>`;
+    } else {
+      body = `<pre class="artifacts-viewer-pre">${escapeHtml(content)}</pre>`;
+    }
+    return head + body;
+  }
+
+  // Minimal YAML tint — keys get accent color, strings stay default,
+  // numbers/booleans get a contrast color, comments dim. No tokeniser
+  // — just regex over the escaped output, line by line.
+  function highlightYaml(content) {
+    return content.split("\n").map(line => {
+      const esc = escapeHtml(line);
+      // Comment lines (whole line)
+      if (/^\s*#/.test(esc)) return `<span class="art-yaml-comment">${esc}</span>`;
+      // List item marker + key/value
+      return esc
+        .replace(/(^\s*-?\s*)([A-Za-z_][A-Za-z0-9_-]*)(:)(\s|$)/, (_m, pfx, key, colon, after) =>
+          `${pfx}<span class="art-yaml-key">${key}</span><span class="art-yaml-punct">${colon}</span>${after}`)
+        .replace(/\b(true|false|null|yes|no)\b/gi, `<span class="art-yaml-bool">$1</span>`)
+        .replace(/\b(\d+(?:\.\d+)?)\b/g, `<span class="art-yaml-num">$1</span>`);
+    }).join("\n");
+  }
+
+  function highlightJson(content) {
+    return escapeHtml(content)
+      .replace(/(&quot;[^&]*?&quot;)(\s*:)/g, `<span class="art-json-key">$1</span>$2`)
+      .replace(/:\s*(&quot;[^&]*?&quot;)/g, `: <span class="art-json-string">$1</span>`)
+      .replace(/\b(true|false|null)\b/g, `<span class="art-json-bool">$1</span>`)
+      .replace(/:\s*(-?\d+(?:\.\d+)?)/g, `: <span class="art-json-num">$1</span>`);
+  }
 
   // Per-step illustration banners shown above the engagement stat tiles.
   // Each step gets a hand-rolled inline SVG so we don't depend on any
@@ -1295,16 +1447,191 @@
     if (chatEventSource) { chatEventSource.close(); chatEventSource = null; }
     chatSessionId = nextSid;
     chatProjectContext = currentProjectId() || null;
+    // Default placeholder while the welcome-card fetch is in flight.
     chatLog.innerHTML = `
       <div class="chat-empty">
         <p>Conversational interaction with any agent on the SAM mesh.</p>
         <p class="muted">${chatProjectContext
-          ? `Chat is scoped to <code>${escapeHtml(chatProjectContext)}</code>. ` +
-            `Click <strong>Load history</strong> above to restore previous messages, or just type to start a fresh thread.`
+          ? `Chat is scoped to <code>${escapeHtml(chatProjectContext)}</code>. Loading state…`
           : `No project active — pick one from the sidebar to scope the chat, or talk to any mesh agent directly.`}
         </p>
       </div>`;
     updateLoadHistoryButton();
+    // Project active → fetch state and replace the placeholder with the
+    // contextual welcome card. Skipped when there's existing chat history
+    // (the user will hit Load history themselves if they want the thread).
+    if (chatProjectContext && !hasChatHistory(chatSessionId)) {
+      hydrateChatWelcomeCard(chatProjectContext, chatSessionId);
+    }
+  }
+
+  // Replace the chat-empty placeholder with a state-aware welcome card
+  // for the active project. Fetches /lifecycle and /overview to figure
+  // out the current step + recommended next action, renders a card with
+  // a quick-action button, and primes the chat input on click.
+  async function hydrateChatWelcomeCard(eid, sid) {
+    let lifecycle = { steps: {} };
+    let stats = {};
+    let artifacts = [];
+    try {
+      [lifecycle, stats, artifacts] = await Promise.all([
+        fetch(`/api/engagements/${encodeURIComponent(eid)}/lifecycle`).then(r => r.json()).catch(() => ({ steps: {} })),
+        fetch(`/api/engagements/${encodeURIComponent(eid)}/overview`).then(r => r.json()).catch(() => ({})),
+        fetch(`/api/engagements/${encodeURIComponent(eid)}/artifacts`).then(r => r.json()).catch(() => []),
+      ]);
+    } catch { /* fall through to defaults */ }
+
+    // If the user has navigated/typed/loaded history while the fetch was
+    // in flight, don't clobber what they're doing.
+    if (chatSessionId !== sid) return;
+    if (!chatLog.querySelector(".chat-empty")) return;
+
+    const hasIntake = artifacts.includes("discovery/intake.json");
+    const discoveryStatus = lifecycle?.steps?.discovery?.status || "NOT_STARTED";
+    const discoveryNote = lifecycle?.steps?.discovery?.note || "";
+    const discoveryDone = discoveryStatus === "DONE" || discoveryStatus === "DONE_WITH_CONCERNS";
+    const hasDiscoveryBrief = artifacts.includes("discovery/discovery-brief.yaml");
+    const openItemsCount = (stats.open_items_blocking || 0) + (stats.open_items_advisory || 0);
+    const discoveryInProgress = !discoveryDone && (hasDiscoveryBrief || openItemsCount > 0);
+
+    // Lifecycle steps in order — used to find current + next.
+    const steps = [
+      { id: "intake",     label: "Intake",        done: hasIntake },
+      { id: "discovery",  label: "Discovery",     done: discoveryDone },
+      { id: "design",     label: "Design",        done: false },
+      { id: "review",     label: "Review",        done: false },
+      { id: "validation", label: "Validation",    done: false },
+      { id: "blueprint",  label: "Blueprint",     done: false },
+    ];
+    const firstUnfinished = steps.find(s => !s.done);
+    const lastDone = [...steps].reverse().find(s => s.done);
+    const currentLabel = firstUnfinished ? firstUnfinished.label : "Complete";
+
+    // Decide the primary action button per state.
+    let action = null;
+    if (!hasIntake) {
+      action = { label: "Open intake form →", href: `/intake/edit/${encodeURIComponent(eid)}` };
+    } else if (!discoveryDone && !discoveryInProgress) {
+      action = { label: "Start Discovery →", prime: "Let's start discovery — please review the intake and ask your first follow-up." };
+    } else if (discoveryInProgress) {
+      action = { label: "Continue Discovery →", prime: "" };
+    } else if (discoveryDone) {
+      action = { label: "Ask about the brief →", prime: "Summarize the key findings from discovery and what design decisions are next." };
+    }
+
+    const noteLine = discoveryNote ? `<p class="welcome-note">${escapeHtml(discoveryNote)}</p>` : "";
+
+    chatLog.innerHTML = `
+      <div class="chat-msg agent welcome-card">
+        <div class="welcome-eyebrow">${escapeHtml(eid)}</div>
+        <div class="welcome-title">Where you are</div>
+        <div class="welcome-state-row">
+          <div>
+            <div class="welcome-state-label">Current step</div>
+            <div class="welcome-state-value">${escapeHtml(currentLabel)}</div>
+          </div>
+          ${lastDone ? `<div>
+            <div class="welcome-state-label">Last completed</div>
+            <div class="welcome-state-value">${escapeHtml(lastDone.label)}</div>
+          </div>` : ""}
+          <div>
+            <div class="welcome-state-label">Open items</div>
+            <div class="welcome-state-value">${(stats.open_items_blocking || 0)} blocking · ${(stats.open_items_advisory || 0)} advisory</div>
+          </div>
+        </div>
+        ${noteLine}
+        ${action ? `<div class="welcome-actions">
+          ${action.href
+            ? `<a class="cta-btn welcome-action" href="${action.href}">${escapeHtml(action.label)}</a>`
+            : `<button class="cta-btn welcome-action" data-prime="${escapeHtml(action.prime || "")}">${escapeHtml(action.label)}</button>`}
+        </div>` : ""}
+        <p class="welcome-hint">Or just type your question below — the agent has full project context.</p>
+      </div>`;
+
+    chatLog.querySelectorAll(".welcome-action[data-prime]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const prime = btn.getAttribute("data-prime") || "";
+        applyChat("open");
+        if (chatInput) {
+          chatInput.value = prime;
+          chatInput.focus();
+          if (prime) {
+            // Auto-submit primed messages so the user doesn't have to
+            // hit Send themselves — this is the "Start Discovery" flow.
+            chatForm.requestSubmit?.();
+          }
+        }
+      });
+    });
+
+    // Side-effect: also refresh the sticky lifecycle bar with the data
+    // we just fetched (so we don't double-fetch).
+    updateLifecycleBar({
+      eid, lifecycle, hasIntake, discoveryDone, discoveryInProgress,
+      currentLabel, lastDoneLabel: lastDone?.label,
+    });
+  }
+
+  // Sticky one-line lifecycle indicator above the chat log. Always
+  // visible when a project is active; reflects "Step: <current> · Next:
+  // <next>". Refreshed by syncChatProjectContext on project change AND
+  // by the Progress page's 10s auto-refresh tick.
+  function updateLifecycleBar(state) {
+    const bar = document.getElementById("chat-lifecycle-bar");
+    if (!bar) return;
+    if (!state || !state.eid) {
+      bar.classList.add("hidden");
+      bar.innerHTML = "";
+      bar.setAttribute("aria-hidden", "true");
+      return;
+    }
+    const { hasIntake, discoveryDone, discoveryInProgress, currentLabel, lastDoneLabel } = state;
+    const stepClass = discoveryDone ? "done"
+      : discoveryInProgress ? "in-progress"
+      : hasIntake ? "ready"
+      : "waiting";
+    bar.classList.remove("hidden");
+    bar.setAttribute("aria-hidden", "false");
+    bar.innerHTML = `
+      <span class="chat-lifecycle-dot ${stepClass}" aria-hidden="true"></span>
+      <span class="chat-lifecycle-text">
+        <strong>${escapeHtml(currentLabel || "Idle")}</strong>${
+          lastDoneLabel ? ` · last: ${escapeHtml(lastDoneLabel)}` : ""
+        }
+      </span>`;
+  }
+
+  // Refresh the lifecycle bar from the network. Called by the Progress
+  // page's auto-refresh tick so the bar reflects state changes the user
+  // wouldn't otherwise see (e.g. while sitting on Requirements / chat).
+  async function refreshLifecycleBar() {
+    const eid = currentProjectId();
+    if (!eid) { updateLifecycleBar(null); return; }
+    try {
+      const [lifecycle, stats, artifacts] = await Promise.all([
+        fetch(`/api/engagements/${encodeURIComponent(eid)}/lifecycle`).then(r => r.json()).catch(() => ({ steps: {} })),
+        fetch(`/api/engagements/${encodeURIComponent(eid)}/overview`).then(r => r.json()).catch(() => ({})),
+        fetch(`/api/engagements/${encodeURIComponent(eid)}/artifacts`).then(r => r.json()).catch(() => []),
+      ]);
+      const hasIntake = artifacts.includes("discovery/intake.json");
+      const discoveryStatus = lifecycle?.steps?.discovery?.status || "NOT_STARTED";
+      const discoveryDone = discoveryStatus === "DONE" || discoveryStatus === "DONE_WITH_CONCERNS";
+      const openItemsCount = (stats.open_items_blocking || 0) + (stats.open_items_advisory || 0);
+      const hasDiscoveryBrief = artifacts.includes("discovery/discovery-brief.yaml");
+      const discoveryInProgress = !discoveryDone && (hasDiscoveryBrief || openItemsCount > 0);
+      const steps = [
+        { id: "intake", label: "Intake", done: hasIntake },
+        { id: "discovery", label: "Discovery", done: discoveryDone },
+        { id: "design", label: "Design", done: false },
+      ];
+      const firstUnfinished = steps.find(s => !s.done);
+      const lastDone = [...steps].reverse().find(s => s.done);
+      updateLifecycleBar({
+        eid, hasIntake, discoveryDone, discoveryInProgress,
+        currentLabel: firstUnfinished?.label || "Complete",
+        lastDoneLabel: lastDone?.label,
+      });
+    } catch { /* swallow; next tick retries */ }
   }
 
   function updateLoadHistoryButton() {
@@ -1345,10 +1672,17 @@
       .trim();
   }
 
-  // While the agent is "thinking", we paint a single live message bubble and
-  // update its text as each TaskStatusUpdateEvent arrives. When the
-  // FinalResponse lands we finalize it (and persist to localStorage).
-  let pendingAgentMsg = null;     // { el, lastText }
+  // While the agent is "thinking", we paint:
+  //   (a) an "activity stream" — accumulating pills, one per distinct
+  //       short status update emitted by the agent ("Loading discovery
+  //       framework…", "Checking integration hub…"). Latest pill is
+  //       in-progress, earlier ones get a ✓.
+  //   (b) a "live bubble" below the pills — only used for long-form
+  //       text chunks that are clearly the streaming final answer
+  //       (e.g. multi-line markdown the LLM is composing).
+  // On FinalResponse, the pills lock in (all ✓), the live bubble is
+  // replaced with the final markdown answer, and we persist.
+  let pendingAgentMsg = null;     // { el, lastText, pillsContainer, pills: [{el, text}] }
 
   // While streaming, hide the raw ```question JSON block behind a
   // "preparing form…" placeholder. We can't safely partial-parse the
@@ -1360,19 +1694,71 @@
     return preamble + (preamble ? "\n\n" : "") + "📝 Preparing question…";
   }
 
+  // Classify a streaming text as either a "status pill" (short, single-
+  // line, agent-narrating-what-it's-doing) or "live bubble content" (long
+  // or multi-line — the actual answer streaming in).
+  function isStatusPill(text) {
+    if (!text) return false;
+    const t = text.trim();
+    if (!t) return false;
+    if (t.length > 120) return false;
+    if (t.includes("\n")) return false;
+    return true;
+  }
+
+  function appendActivityPill(text) {
+    if (!pendingAgentMsg) return;
+    // Mark previous pill as done.
+    const prev = pendingAgentMsg.pills[pendingAgentMsg.pills.length - 1];
+    if (prev) {
+      prev.el.classList.remove("in-progress");
+      prev.el.classList.add("done");
+      const icon = prev.el.querySelector(".activity-pill-icon");
+      if (icon) icon.textContent = "✓";
+    }
+    const pill = document.createElement("div");
+    pill.className = "activity-pill in-progress";
+    pill.innerHTML = `<span class="activity-pill-icon">⏳</span><span class="activity-pill-text"></span>`;
+    pill.querySelector(".activity-pill-text").textContent = text;
+    pendingAgentMsg.pillsContainer.appendChild(pill);
+    pendingAgentMsg.pills.push({ el: pill, text });
+  }
+
   function startOrUpdateAgentBubble(text) {
     if (!text) return;
     chatLog.querySelector(".chat-empty")?.remove();
+    chatLog.querySelector(".welcome-card")?.remove();
     const display = maskQuestionBlockDuringStream(text);
+    const isPill = isStatusPill(text);
+
     if (!pendingAgentMsg) {
-      const div = document.createElement("div");
-      div.className = "chat-msg agent agent-thinking";
-      renderAgentMarkdown(div, display);
-      chatLog.appendChild(div);
-      pendingAgentMsg = { el: div, lastText: text };
+      // Open a new agent-turn container with: pills section + live bubble.
+      const wrap = document.createElement("div");
+      wrap.className = "chat-msg agent agent-thinking agent-turn";
+      const pillsContainer = document.createElement("div");
+      pillsContainer.className = "activity-pills";
+      const bubble = document.createElement("div");
+      bubble.className = "agent-turn-text";
+      wrap.appendChild(pillsContainer);
+      wrap.appendChild(bubble);
+      chatLog.appendChild(wrap);
+      pendingAgentMsg = { el: wrap, lastText: text, pillsContainer, bubbleEl: bubble, pills: [] };
+      if (isPill) {
+        appendActivityPill(text);
+      } else {
+        renderAgentMarkdown(bubble, display);
+      }
     } else if (text !== pendingAgentMsg.lastText) {
-      renderAgentMarkdown(pendingAgentMsg.el, display);
       pendingAgentMsg.lastText = text;
+      if (isPill) {
+        // New short status — only add a pill if the text differs from
+        // the most recent pill (avoid duplicates).
+        const last = pendingAgentMsg.pills[pendingAgentMsg.pills.length - 1];
+        if (!last || last.text !== text) appendActivityPill(text);
+      } else {
+        // Long / multi-line content — stream into the bubble.
+        renderAgentMarkdown(pendingAgentMsg.bubbleEl, display);
+      }
     }
     chatLog.scrollTop = chatLog.scrollHeight;
   }
@@ -1410,8 +1796,37 @@
 
     if (pendingAgentMsg) {
       pendingAgentMsg.el.classList.remove("agent-thinking");
-      if (cleanText) renderAgentMarkdown(pendingAgentMsg.el, cleanText);
-      else pendingAgentMsg.el.remove();
+      // Lock all pills as done (last one still in-progress at this point).
+      const lastPill = pendingAgentMsg.pills[pendingAgentMsg.pills.length - 1];
+      if (lastPill) {
+        lastPill.el.classList.remove("in-progress");
+        lastPill.el.classList.add("done");
+        const icon = lastPill.el.querySelector(".activity-pill-icon");
+        if (icon) icon.textContent = "✓";
+      }
+      // Collapse the pills container to a one-liner summary if there
+      // were any — keeps the chat tidy after the turn finishes.
+      if (pendingAgentMsg.pills.length) {
+        const n = pendingAgentMsg.pills.length;
+        const summary = document.createElement("div");
+        summary.className = "activity-pills-summary";
+        summary.innerHTML = `<span class="activity-pill-icon">✓</span><span>${n} step${n === 1 ? "" : "s"} (click to expand)</span>`;
+        summary.addEventListener("click", () => {
+          pendingAgentMsg?.pillsContainer?.classList.toggle("expanded");
+          summary.classList.toggle("expanded");
+        });
+        pendingAgentMsg.pillsContainer.classList.add("collapsed");
+        pendingAgentMsg.pillsContainer.parentNode.insertBefore(summary, pendingAgentMsg.pillsContainer);
+      }
+      // Render the final answer in the bubble (or remove the whole turn
+      // if there's nothing left to show after stripping question blocks).
+      if (cleanText) {
+        renderAgentMarkdown(pendingAgentMsg.bubbleEl, cleanText);
+      } else if (!pendingAgentMsg.pills.length) {
+        pendingAgentMsg.el.remove();
+      } else {
+        pendingAgentMsg.bubbleEl.remove();
+      }
       pendingAgentMsg = null;
     } else if (cleanText) {
       // No bubble was opened (no status updates seen) — render the final reply.
