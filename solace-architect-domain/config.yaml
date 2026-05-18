@@ -25,6 +25,12 @@ shared_config:
       broker_vpn: ${SOLACE_BROKER_VPN, default}
       temporary_queue: ${USE_TEMPORARY_QUEUES, true}
 
+  - models:
+      general: &general_model
+        model: ${LLM_SERVICE_GENERAL_MODEL_NAME}
+        api_base: ${LLM_SERVICE_ENDPOINT}
+        api_key: ${LLM_SERVICE_API_KEY}
+
   - services:
       session_service: &default_session_service
         type: "memory"
@@ -246,15 +252,13 @@ apps:
           function_name: "list_projects"
 
         # ---- Artifacts ----
+        # list_artifacts is auto-injected by SAM's artifact_management builtin; declaring it here collides.
         - tool_type: python
           component_module: "solace_architect_core.tools.artifact_tools"
           function_name: "read_artifact"
         - tool_type: python
           component_module: "solace_architect_core.tools.artifact_tools"
           function_name: "write_artifact"
-        - tool_type: python
-          component_module: "solace_architect_core.tools.artifact_tools"
-          function_name: "list_artifacts"
 
         # ---- Decisions + open-items (gap tracking) ----
         - tool_type: python
