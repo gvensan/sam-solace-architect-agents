@@ -771,7 +771,7 @@ pre {
    always present (not just for the un-started case) and supports
    multiple variants and action buttons. */
 .progress-cta {
-  display: flex; align-items: center; justify-content: space-between; gap: 24px;
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 24px;
   margin: 16px 0 20px; padding: 18px 22px;
   background: linear-gradient(135deg, rgba(0,200,149,0.08), rgba(9,59,95,0.04));
   border: 1px solid var(--accent); border-radius: 10px;
@@ -1172,3 +1172,122 @@ pre {
 .activity-pill.tool-call { font-family: 'Space Mono', monospace; font-size: 11px; }
 .activity-pill.tool-call .tool-call-name { font-weight: 600; }
 .activity-pill.tool-call .tool-call-args { color: var(--muted, #888); margin-left: 4px; }
+
+.chat-msg.phase-handoff {
+  align-self: stretch;
+  background: rgba(0,200,149,0.06);
+  border: 1px solid rgba(0,200,149,0.3);
+  padding: 12px 14px;
+}
+.phase-handoff-eyebrow {
+  font-family: 'Space Mono', monospace; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--accent, #00C895);
+  margin-bottom: 4px;
+}
+.phase-handoff-title { font-weight: 600; font-size: 14px; margin: 0 0 6px; }
+.phase-handoff-body { font-size: 13px; line-height: 1.4; margin: 0 0 10px; }
+.phase-handoff-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.phase-handoff-cta {
+  background: var(--primary, #0e2a47); color: white;
+  padding: 6px 14px; border-radius: 6px; border: none;
+  font-size: 13px; font-weight: 600; cursor: pointer;
+}
+.phase-handoff-cta:hover { background: var(--primary-hover, #1a3a5c); }
+.phase-handoff-cta:disabled { background: #ccc; cursor: not-allowed; }
+.phase-handoff-secondary {
+  font-size: 12px; color: var(--muted, #888); text-decoration: none;
+  padding: 6px 0;
+}
+.phase-handoff-secondary:hover { color: var(--text); text-decoration: underline; }
+.phase-handoff-hint {
+  display: block; margin-top: 8px;
+  font-size: 11px; color: var(--muted, #888);
+}
+
+.progress-cta-secondary-actions {
+  flex-basis: 100%; width: 100%;
+  display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+  margin-top: 4px; padding-top: 10px;
+  border-top: 1px dashed var(--border);
+}
+.cta-link-danger {
+  background: none; border: none; padding: 0;
+  font-family: inherit; font-size: 12px; color: var(--muted, #888);
+  text-decoration: underline; cursor: pointer;
+}
+.cta-link-danger:hover { color: #c24040; }
+.secondary-action-hint { font-size: 11px; color: var(--muted, #888); }
+
+.stat-tile-row { display: flex; gap: 14px; flex-wrap: wrap; margin: 12px 0 22px; }
+.stat-tile-row .stat-tile {
+  flex: 1 1 140px; min-width: 140px;
+  padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg);
+}
+.stat-tile-row .stat-tile-label {
+  font-family: 'Space Mono', monospace; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted, #888); margin-bottom: 4px;
+}
+.stat-tile-row .stat-tile-value { font-size: 22px; font-weight: 600; color: var(--primary); }
+
+.stats-table {
+  width: 100%; border-collapse: collapse; margin: 8px 0 24px;
+  font-size: 13px;
+}
+.stats-table th, .stats-table td {
+  padding: 8px 12px; text-align: left;
+  border-bottom: 1px solid var(--border);
+}
+.stats-table th {
+  font-family: 'Space Mono', monospace; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--muted, #888); font-weight: 600;
+  background: rgba(0,0,0,0.02);
+}
+.stats-table tbody tr:hover { background: rgba(0,0,0,0.02); }
+.stats-table td.muted { color: var(--muted, #888); font-style: italic; }
+
+.stats-pending {
+  padding: 14px 18px; background: rgba(0,0,0,0.02);
+  border: 1px dashed var(--border); border-radius: 8px;
+}
+.stats-pending p { margin: 0 0 6px; }
+.stats-pending p:last-child { margin-bottom: 0; }
+
+.export-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px; margin: 12px 0 24px;
+}
+.export-card {
+  padding: 14px 16px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg);
+  display: flex; flex-direction: column; gap: 8px;
+  transition: border-color 0.15s, transform 0.1s;
+}
+.export-card:not(.export-card-disabled):hover {
+  border-color: var(--accent, #00C895);
+  transform: translateY(-1px);
+}
+.export-card-disabled { opacity: 0.6; background: rgba(0,0,0,0.02); }
+.export-card-head { display: flex; align-items: center; gap: 8px; }
+.export-card-icon { font-size: 22px; line-height: 1; flex-shrink: 0; }
+.export-card-title { font-weight: 600; font-size: 14px; flex: 1; color: var(--primary); }
+.export-card-desc {
+  margin: 0; font-size: 12px; color: var(--muted, #888);
+  line-height: 1.45; flex: 1;
+}
+.export-card-cta { align-self: flex-start; font-size: 12px; padding: 6px 12px; }
+.export-card-cta:disabled { opacity: 0.55; cursor: not-allowed; }
+.export-archive {
+  display: flex; gap: 16px; padding: 18px 20px; margin: 12px 0 24px;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: linear-gradient(135deg, rgba(0,200,149,0.06), rgba(9,59,95,0.03));
+}
+.export-archive .export-card-icon { font-size: 36px; align-self: flex-start; }
+.export-archive-body { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.export-archive-body .export-card-title { font-size: 15px; }
+.export-archive-body .cta-btn { align-self: flex-start; margin-top: 6px; }
+
+.status-badge.pending { background: rgba(0,0,0,0.06); color: var(--muted, #888); }

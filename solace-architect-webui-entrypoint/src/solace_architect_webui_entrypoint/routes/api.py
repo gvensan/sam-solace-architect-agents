@@ -18,7 +18,53 @@ from solace_architect_core.tools import (
     dashboard_tools, intake_tools, blueprint_tools,
     telemetry_tools, lifecycle_tools,
 )
-from solace_architect_core._storage import safe_artifact_path
+from solace_architect_core._storage import (
+    read_jsonl, read_yaml, safe_artifact_path, write_text, write_yaml,
+)
+
+
+async def _clear_step_telemetry(engagement_id: str, step: str) -> dict:
+    """Drop everything that ties timing/tokens to ``step`` for this engagement.
+
+    A clean restart needs to remove not just artifacts but the metrics that
+    reference them, otherwise the Stats view keeps showing pre-restart values.
+    Two stores to touch (per the lifecycle/telemetry design):
+
+      * ``meta/session.yaml`` — ``timing_data[step]`` written by
+        ``lifecycle_tools.set_step_status`` on DONE.
+      * ``meta/telemetry/llm-calls.jsonl`` — append-only ledger written by
+        ``record_llm_call_telemetry``. Filtered + rewritten in place.
+
+    Returns a small summary the caller can include in its response.
+    """
+    cleared_timing = False
+    try:
+        session = read_yaml(engagement_id, "meta/session.yaml", default={}) or {}
+        timing = dict(session.get("timing_data", {}) or {})
+        if step in timing:
+            del timing[step]
+            session["timing_data"] = timing
+            write_yaml(engagement_id, "meta/session.yaml", session)
+            cleared_timing = True
+    except Exception:
+        pass
+
+    removed_telemetry_rows = 0
+    try:
+        rows = read_jsonl(engagement_id, "meta/telemetry/llm-calls.jsonl")
+        kept = [r for r in rows if r.get("step_id") != step]
+        removed_telemetry_rows = len(rows) - len(kept)
+        if removed_telemetry_rows > 0:
+            # Rewrite the whole file. read_jsonl tolerates a missing file, so
+            # write_text restores it cleanly if no rows remained.
+            content = "\n".join(__import__("json").dumps(r, sort_keys=False) for r in kept)
+            if content:
+                content += "\n"
+            write_text(engagement_id, "meta/telemetry/llm-calls.jsonl", content)
+    except Exception:
+        pass
+
+    return {"timing_cleared": cleared_timing, "telemetry_rows_removed": removed_telemetry_rows}
 
 
 _VALID_GROUP_BY_ENGAGEMENT = {"agent", "step", "model", "day"}
@@ -139,6 +185,10 @@ async def reset_discovery(engagement_id: str) -> Any:
     # Clear status entry
     await lifecycle_tools.clear_step_status(engagement_id, "discovery")
 
+    # Drop the metrics tied to this step — timing_data + per-step telemetry rows.
+    # Without this, Stats keeps showing pre-restart numbers (see issue d).
+    telemetry_cleared = await _clear_step_telemetry(engagement_id, "discovery")
+
     # Supersede discovery-sourced open-items
     items_res = await decision_tools.read_open_items(engagement_id, source="discovery")
     superseded = 0
@@ -151,7 +201,11 @@ async def reset_discovery(engagement_id: str) -> Any:
                 )
                 superseded += 1
 
-    return {"removed_artifacts": removed, "open_items_superseded": superseded}
+    return {
+        "removed_artifacts": removed,
+        "open_items_superseded": superseded,
+        **telemetry_cleared,
+    }
 
 
 # Folders SADomainAgent writes into — one per design scope.
@@ -197,6 +251,9 @@ async def reset_design(engagement_id: str) -> Any:
     # Clear status entry
     await lifecycle_tools.clear_step_status(engagement_id, "design")
 
+    # Drop the metrics tied to this step — timing_data + per-step telemetry rows.
+    telemetry_cleared = await _clear_step_telemetry(engagement_id, "design")
+
     # Supersede domain-sourced open-items
     items_res = await decision_tools.read_open_items(engagement_id, source="domain")
     superseded = 0
@@ -209,7 +266,11 @@ async def reset_design(engagement_id: str) -> Any:
                 )
                 superseded += 1
 
-    return {"removed_artifacts": removed, "open_items_superseded": superseded}
+    return {
+        "removed_artifacts": removed,
+        "open_items_superseded": superseded,
+        **telemetry_cleared,
+    }
 
 
 # ----- Intake -----

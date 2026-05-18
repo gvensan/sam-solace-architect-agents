@@ -678,8 +678,10 @@
           view.innerHTML = `<p class="artifacts-viewer-hint">Loading ${escapeHtml(name)}…</p>`;
           try {
             const r = await fetch(`/api/engagements/${encodeURIComponent(eid)}/artifacts/${encodeURIComponent(name)}`);
-            const c = await r.text();
-            view.innerHTML = renderArtifactContent(name, c);
+            // Endpoint returns read_artifact's .data wrapped in JSON, so the body is a
+            // JSON-encoded string; .json() decodes the escapes back to real newlines/quotes.
+            const c = await r.json();
+            view.innerHTML = renderArtifactContent(name, typeof c === "string" ? c : JSON.stringify(c, null, 2));
           } catch (err) {
             view.innerHTML = `<p class="artifacts-viewer-hint">Could not load: ${escapeHtml(err.message || err)}</p>`;
           }
@@ -688,24 +690,130 @@
     },
 
     stats: async (root, eid) => {
-      const d = await fetch(`/api/engagements/${encodeURIComponent(eid)}/stats`).then(r => r.json());
+      const [stats, lc, arts, tok] = await Promise.all([
+        fetch(`/api/engagements/${encodeURIComponent(eid)}/stats`).then(r => r.json()).catch(() => ({})),
+        fetch(`/api/engagements/${encodeURIComponent(eid)}/lifecycle`).then(r => r.json()).catch(() => ({ steps: {} })),
+        fetch(`/api/engagements/${encodeURIComponent(eid)}/artifacts`).then(r => r.json()).catch(() => []),
+        fetch(`/api/engagements/${encodeURIComponent(eid)}/token-usage`).then(r => r.json()).catch(() => null),
+      ]);
+      const fmtSec = (s) => {
+        s = Math.max(0, Math.floor(s || 0));
+        if (s < 60) return `${s}s`;
+        const m = Math.floor(s / 60); const r = s - m * 60;
+        if (m < 60) return r ? `${m}m ${r}s` : `${m}m`;
+        const h = Math.floor(m / 60); const mm = m - h * 60;
+        return mm ? `${h}h ${mm}m` : `${h}h`;
+      };
+      const fmtNum = (n) => (n == null ? "—" : Number(n).toLocaleString());
+
+      // Step durations from lifecycle.steps (set_step_status writes started_at/updated_at).
+      const stepRows = Object.entries(lc?.steps || {}).map(([name, info]) => {
+        const started = info?.started_at;
+        const updated = info?.updated_at;
+        let durStr = "—";
+        if (started && updated) {
+          try {
+            const ms = new Date(updated).getTime() - new Date(started).getTime();
+            durStr = fmtSec(Math.floor(ms / 1000));
+          } catch {}
+        }
+        const badge = info?.status === "DONE" ? `<span class="status-badge done">Done</span>`
+          : info?.status === "DONE_WITH_CONCERNS" ? `<span class="status-badge advisory">Done with concerns</span>`
+          : `<span class="status-badge">${escapeHtml(info?.status || "—")}</span>`;
+        return `<tr>
+          <td><strong>${escapeHtml(name)}</strong></td>
+          <td>${badge}</td>
+          <td>${durStr}</td>
+          <td class="muted">${escapeHtml(info?.note || "")}</td>
+        </tr>`;
+      }).join("") || `<tr><td colspan="4" class="muted">No steps recorded yet. Each agent writes its status via <code>set_step_status</code> at end-of-turn.</td></tr>`;
+
+      const tokenTotals = tok?.totals || tok || null;
+      const hasTokens = tokenTotals && (tokenTotals.input_tokens || tokenTotals.output_tokens);
+
       root.innerHTML = `<h1>Stats</h1>
-        <p>Wall: ${d.wall_time_seconds}s · Execution: ${d.execution_seconds}s · User wait: ${d.user_wait_seconds}s · Steps: ${d.steps_executed}</p>`;
+        <p class="muted">Time, throughput, and token usage for this engagement. Per-step durations come from <code>meta/engagement-status.yaml</code>; token capture writes to <code>meta/telemetry/llm-calls.jsonl</code>.</p>
+
+        <div class="stat-tile-row">
+          <div class="stat-tile"><div class="stat-tile-label">Wall time</div><div class="stat-tile-value">${fmtSec(stats.wall_time_seconds)}</div></div>
+          <div class="stat-tile"><div class="stat-tile-label">Execution</div><div class="stat-tile-value">${fmtSec(stats.execution_seconds)}</div></div>
+          <div class="stat-tile"><div class="stat-tile-label">User wait</div><div class="stat-tile-value">${fmtSec(stats.user_wait_seconds)}</div></div>
+          <div class="stat-tile"><div class="stat-tile-label">Steps completed</div><div class="stat-tile-value">${fmtNum(stats.steps_executed)}</div></div>
+          <div class="stat-tile"><div class="stat-tile-label">Artifacts</div><div class="stat-tile-value">${fmtNum((arts || []).length)}</div></div>
+        </div>
+
+        <h2>Per-step timing</h2>
+        <table class="stats-table">
+          <thead><tr><th>Step</th><th>Status</th><th>Duration</th><th>Note</th></tr></thead>
+          <tbody>${stepRows}</tbody>
+        </table>
+
+        <h2>Token usage</h2>
+        ${hasTokens
+          ? `<div class="stat-tile-row">
+               <div class="stat-tile"><div class="stat-tile-label">Input</div><div class="stat-tile-value">${fmtNum(tokenTotals.input_tokens)}</div></div>
+               <div class="stat-tile"><div class="stat-tile-label">Output</div><div class="stat-tile-value">${fmtNum(tokenTotals.output_tokens)}</div></div>
+               <div class="stat-tile"><div class="stat-tile-label">Cached input</div><div class="stat-tile-value">${fmtNum(tokenTotals.cached_input_tokens)}</div></div>
+             </div>
+             <p class="muted">Cross-engagement breakdown: <a href="/settings#usage">Settings → Usage</a></p>`
+          : `<div class="stats-pending">
+               <p><strong>Per-engagement token capture is not yet wired into the running agents.</strong></p>
+               <p class="muted">The capture infrastructure (<code>record_llm_call_telemetry</code>) and the <code>/api/engagements/{id}/token-usage</code> endpoint are built and ready. The remaining piece is each agent's <code>after_model_callback</code> registration — once that ships, this section will populate automatically. Cross-engagement totals (from when the WebUI itself calls the LLM) are visible at <a href="/settings#usage">Settings → Usage</a>.</p>
+             </div>`}
+        `;
     },
 
     export: async (root, eid) => {
+      // Audience packs — descriptions are stable copy; readiness is computed
+      // from lifecycle so disabled packs show *why* they're disabled.
+      const AUDIENCE_PACKS = [
+        { id: "blueprint", title: "Blueprint",   icon: "🏗️", desc: "Engineering handoff — architecture, topology, SAM YAMLs, broker provisioning, runbook.",         prereq: "design"    },
+        { id: "executive", title: "Executive",   icon: "📊", desc: "Business outcome summary — ROI, risk reduction, strategic value. For CXO and board review.",     prereq: "blueprint" },
+        { id: "admin-ops", title: "Admin & Ops", icon: "🔧", desc: "Day-2 operability — runbook, monitoring coverage, escalation, capacity planning, upgrade paths.", prereq: "blueprint" },
+        { id: "security",  title: "Security",    icon: "🔒", desc: "Security posture — ACL model, TLS, authn/z, compliance, encryption at rest and in transit.",     prereq: "blueprint" },
+        { id: "developers",title: "Developers",  icon: "💻", desc: "Developer experience — SDK choices, topic taxonomy, schema governance, onboarding path.",        prereq: "blueprint" },
+      ];
+
+      const lc = await fetch(`/api/engagements/${encodeURIComponent(eid)}/lifecycle`).then(r => r.json()).catch(() => ({ steps: {} }));
+      const isDone = (s) => {
+        const st = lc?.steps?.[s]?.status;
+        return st === "DONE" || st === "DONE_WITH_CONCERNS";
+      };
+
+      const cards = AUDIENCE_PACKS.map(p => {
+        const ready = isDone(p.prereq);
+        const badge = ready
+          ? `<span class="status-badge done">Ready</span>`
+          : `<span class="status-badge pending">Awaiting ${escapeHtml(p.prereq)}</span>`;
+        return `<div class="export-card${ready ? "" : " export-card-disabled"}">
+          <div class="export-card-head">
+            <div class="export-card-icon" aria-hidden="true">${p.icon}</div>
+            <div class="export-card-title">${escapeHtml(p.title)}</div>
+            ${badge}
+          </div>
+          <p class="export-card-desc">${escapeHtml(p.desc)}</p>
+          <button class="cta-btn export-card-cta"${ready ? "" : " disabled"}
+                  ${ready ? `onclick="window.__renderPack('${eid}','${p.id}')"` : ""}>
+            ${ready ? "Render HTML →" : "Locked"}
+          </button>
+        </div>`;
+      }).join("");
+
       root.innerHTML = `<h1>Export</h1>
-        <p>Render audience-specific reports for this project:</p>
-        <div class="tile-row">
-          ${["blueprint","executive","admin-ops","security","developers"].map(a =>
-            `<div class="stat-tile">
-               <div class="stat-tile-label">${a}</div>
-               <button class="copy-btn" onclick="window.__renderPack('${eid}','${a}')">Render HTML</button>
-             </div>`
-          ).join("")}
-        </div>
+        <p class="muted">Audience-tailored reports drawn from this engagement's artifacts. Each pack is auto-rendered from the relevant phase outputs; packs without their prerequisite phase complete stay locked until that phase wraps.</p>
+
+        <h2>Audience reports</h2>
+        <div class="export-grid">${cards}</div>
+
         <h2>Full archive</h2>
-        <button class="copy-btn" onclick="window.__downloadZip('${eid}')">Download zip</button>`;
+        <div class="export-archive">
+          <div class="export-card-icon" aria-hidden="true">📦</div>
+          <div class="export-archive-body">
+            <div class="export-card-title">Engagement bundle</div>
+            <p class="export-card-desc">Every artifact this engagement has produced — intake, discovery brief, design scopes, decisions, open items, findings, telemetry — packed as a single <code>.zip</code> for offline review or handoff.</p>
+            <button class="cta-btn" onclick="window.__downloadZip('${eid}')">Download .zip →</button>
+          </div>
+        </div>`;
     },
   };
 
@@ -835,6 +943,26 @@
 
     const discoveryDone = discoveryStatus === "DONE" || discoveryStatus === "DONE_WITH_CONCERNS";
 
+    // Subtle "escape hatch" row — same pattern across every step that has
+    // a Restart action. Visually demoted so it doesn't compete with the
+    // primary forward CTA, but discoverable and tooltip-explained.
+    const restartDiscoveryRow = `
+      <div class="progress-cta-secondary-actions">
+        <button id="restart-discovery-btn" class="cta-link-danger"
+                title="Re-run Discovery from scratch. Wipes discovery/* artifacts and the discovery step status; meta/decisions.yaml is preserved as audit trail. Only use this if requirements have materially changed.">
+          ↺ Restart Discovery
+        </button>
+        <span class="secondary-action-hint">— requirements materially changed? wipe Discovery and start fresh</span>
+      </div>`;
+    const restartDesignRow = `
+      <div class="progress-cta-secondary-actions">
+        <button id="restart-design-btn" class="cta-link-danger"
+                title="Re-run Design from scratch. Wipes every design scope artifact (topic-design, broker-select, …) and the design step status; meta/decisions.yaml is preserved. Only use this if the discovery brief or constraints have changed.">
+          ↺ Restart Design
+        </button>
+        <span class="secondary-action-hint">— discovery brief changed? wipe design output and start fresh</span>
+      </div>`;
+
     // Design DONE — Review will come next when that agent lands.
     if (designDone) {
       const badge = designStatus === "DONE_WITH_CONCERNS"
@@ -848,13 +976,14 @@
             ${designNote ? `<p>${escapeHtml(designNote)}</p>` : ""}
             <p>Next step: <strong>Review</strong>. The reviewer agents
             (architect, developer, ops, security) will audit your design
-            artifacts. Review agent isn't wired up yet — for now you can
-            inspect the design output on the Artifacts tab.</p>
+            artifacts. Review agent isn't wired up yet — for now click
+            <strong>View design →</strong> to inspect the output on the
+            Artifacts tab.</p>
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
-            <a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View design →</a>
-            <button id="restart-design-btn" class="cta-btn cta-btn-danger">Restart Design…</button>
+            <a class="cta-btn" href="/projects/${encodeURIComponent(eid)}/artifacts">View design →</a>
           </div>
+          ${restartDesignRow}
         </div>`;
     }
 
@@ -867,13 +996,14 @@
             <h2>Continue Design in chat</h2>
             <p>SADomainAgent is working through the design scopes.
             ${designNote ? `<em>${escapeHtml(designNote)}</em> ` : ""}
-            Open the chat panel and answer the next form — each scope's
-            artifact appears on the Artifacts tab as the agent finishes.</p>
+            Click <strong>Continue in chat →</strong> to open the chat panel
+            and answer the next form — each scope's artifact appears on the
+            Artifacts tab as the agent finishes.</p>
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
             <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
-            <button id="restart-design-btn" class="cta-btn cta-btn-danger">Restart Design…</button>
           </div>
+          ${restartDesignRow}
         </div>`;
     }
 
@@ -887,16 +1017,18 @@
             <div class="progress-cta-eyebrow">Discovery → Design</div>
             <h2>Discovery is complete ${badge}</h2>
             ${discoveryNote ? `<p>${escapeHtml(discoveryNote)}</p>` : ""}
-            <p>Next step: <strong>Design</strong>. SADomainAgent will walk you
-            through the nine design scopes (topic taxonomy, broker selection,
-            protocols, integration, mesh, HA/DR, SAM, event-portal, migration),
-            confirming each decision with you as an interactive form.</p>
+            <p>Next step: <strong>Design</strong>. Click
+            <strong>Start Design →</strong> to open SADomainAgent in chat —
+            it will walk you through the nine design scopes (topic taxonomy,
+            broker selection, protocols, integration, mesh, HA/DR, SAM,
+            event-portal, migration), confirming each decision with you as
+            an interactive form.</p>
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
             <button id="start-design-btn" class="cta-btn">Start Design →</button>
             <a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View brief →</a>
-            <button id="restart-discovery-btn" class="cta-btn cta-btn-danger">Restart Discovery…</button>
           </div>
+          ${restartDiscoveryRow}
         </div>`;
     }
 
@@ -908,13 +1040,14 @@
             <h2>Continue in chat</h2>
             <p>SADiscoveryAgent is working through the gaps in your intake.
             ${openItemsCount ? `<strong>${openItemsCount}</strong> open item${openItemsCount === 1 ? "" : "s"} recorded so far. ` : ""}
-            Open the chat panel to answer the next question — the brief appears
-            here once the agent finishes its pass.</p>
+            Click <strong>Continue in chat →</strong> to answer the next
+            question — the brief appears here once the agent finishes its
+            pass.</p>
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
             <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
-            <button id="restart-discovery-btn" class="cta-btn cta-btn-danger">Restart Discovery…</button>
           </div>
+          ${restartDiscoveryRow}
         </div>`;
     }
 
@@ -1961,12 +2094,182 @@
   function completeToolTrace(d) {
     if (!pendingAgentMsg) return;
     const entry = d.function_call_id ? pendingAgentMsg.pillByCallId.get(d.function_call_id) : null;
-    if (!entry) return;
-    entry.el.classList.remove("in-progress");
-    entry.el.classList.add("done");
-    const icon = entry.el.querySelector(".activity-pill-icon");
-    if (icon) icon.textContent = "✓";
+    if (entry) {
+      entry.el.classList.remove("in-progress");
+      entry.el.classList.add("done");
+      const icon = entry.el.querySelector(".activity-pill-icon");
+      if (icon) icon.textContent = "✓";
+    }
+    // Independently of pill matching, look for a step-completion signal so
+    // the handoff card can render once this turn finalizes.
+    _queuePhaseHandoffFromToolResult(d);
   }
+
+  // Phase-handoff: shared vocabulary used by the in-chat completion card and
+  // (downstream) the Progress CTA, so the user sees the same next-action label
+  // wherever the system points it out. Keep entries even for phases whose next
+  // agent isn't wired yet — we still want to render "complete" cards for them.
+  const PHASE_NEXT = {
+    discovery: {
+      nextLabel: "Design",
+      ctaLabel: "Start Design →",
+      agent: "SADomainAgent",
+      kickoff: "Discovery is complete. Read the discovery brief and walk me through the first design scope (topic taxonomy by default, or ask me which scope to start with).",
+    },
+    design: {
+      nextLabel: "Review",
+      ctaLabel: "Start Review →",
+      agent: null,
+      kickoff: null,
+      pendingMessage: "Review agents aren't wired up yet — for now you can inspect the design output on the Artifacts tab.",
+    },
+    // review/validation/blueprint/provisioning — add as those agents land.
+  };
+
+  // localStorage dedup so the in-chat handoff card fires only once per
+  // (engagement, phase) transition into DONE. Cleared when the phase status
+  // moves AWAY from DONE (e.g. user clicked Restart), so a fresh completion
+  // re-fires the card.
+  function _phaseHintKey(eid) { return `sa.hint.phase_done.${eid}`; }
+  function _readPhaseHintSet(eid) {
+    if (!eid) return new Set();
+    try { return new Set(JSON.parse(localStorage.getItem(_phaseHintKey(eid)) || "[]")); }
+    catch { return new Set(); }
+  }
+  function _writePhaseHintSet(eid, set) {
+    if (!eid) return;
+    try { localStorage.setItem(_phaseHintKey(eid), JSON.stringify([...set])); } catch {}
+  }
+  function _markPhaseHintShown(eid, step) {
+    const set = _readPhaseHintSet(eid);
+    set.add(step);
+    _writePhaseHintSet(eid, set);
+  }
+  function _clearPhaseHint(eid, step) {
+    const set = _readPhaseHintSet(eid);
+    if (set.delete(step)) _writePhaseHintSet(eid, set);
+  }
+
+  // Queue handoff cards seen via SSE tool_result so they render AFTER the
+  // agent's final answer (not mid-stream). Drained from finalizeAgentBubble.
+  let _pendingPhaseHandoffs = [];
+
+  function _queuePhaseHandoffFromToolResult(d) {
+    if (d?.tool_name !== "set_step_status") return;
+    const result = d.result_data;
+    const data = result?.data || result || {};
+    const step = data.step;
+    const status = data.status;
+    if (!step || !status) return;
+    if (status !== "DONE" && status !== "DONE_WITH_CONCERNS") return;
+    _pendingPhaseHandoffs.push({ step, status });
+  }
+
+  function _drainPendingPhaseHandoffs() {
+    while (_pendingPhaseHandoffs.length) {
+      const { step, status } = _pendingPhaseHandoffs.shift();
+      renderPhaseHandoffCard(step, status);
+    }
+  }
+
+  // Render the explicit "phase complete → next action" card. Idempotent via
+  // _readPhaseHintSet so calling it from both SSE and the lifecycle poller
+  // doesn't double up.
+  function renderPhaseHandoffCard(step, status) {
+    const eid = currentProjectId();
+    if (!eid) return;
+    if (_readPhaseHintSet(eid).has(step)) return;
+    const cfg = PHASE_NEXT[step];
+    if (!cfg) return;
+    _markPhaseHintShown(eid, step);
+
+    const stepDisplay = step.charAt(0).toUpperCase() + step.slice(1);
+    const statusPhrase = status === "DONE_WITH_CONCERNS"
+      ? "complete (with concerns)" : "complete";
+
+    const card = document.createElement("div");
+    card.className = "chat-msg agent phase-handoff";
+    const bodyText = cfg.agent && cfg.kickoff
+      ? `Ready to move forward? Click <strong>${escapeHtml(cfg.ctaLabel)}</strong> below to begin the ${escapeHtml(cfg.nextLabel)} phase — this opens ${escapeHtml(cfg.agent)} in chat with a primed kickoff message.`
+      : escapeHtml(cfg.pendingMessage || `Next phase (${cfg.nextLabel}) isn't wired up yet — check back soon.`);
+    card.innerHTML = `
+      <div class="phase-handoff-eyebrow">${escapeHtml(step)} → ${escapeHtml(cfg.nextLabel)}</div>
+      <h3 class="phase-handoff-title">${escapeHtml(stepDisplay)} is ${statusPhrase}</h3>
+      <p class="phase-handoff-body">${bodyText}</p>
+      <div class="phase-handoff-actions">
+        ${cfg.agent ? `<button type="button" class="phase-handoff-cta">${escapeHtml(cfg.ctaLabel)}</button>` : ""}
+        <a class="phase-handoff-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View artifacts</a>
+      </div>
+      <small class="phase-handoff-hint">To redo ${escapeHtml(stepDisplay)} from scratch, use <em>Restart ${escapeHtml(stepDisplay)}</em> on the Progress page (rare; only when requirements have materially changed).</small>
+    `;
+
+    card.querySelector(".phase-handoff-cta")?.addEventListener("click", () => {
+      applyChat("open");
+      if (cfg.agent) {
+        const sel = document.getElementById("chat-agent-select");
+        if (sel) {
+          const opt = Array.from(sel.options).find(o => o.value === cfg.agent);
+          if (opt) sel.value = cfg.agent;
+        }
+      }
+      if (cfg.kickoff) {
+        const ci = document.getElementById("chat-input");
+        if (ci) {
+          ci.value = cfg.kickoff;
+          ci.focus();
+          chatForm.requestSubmit?.();
+        }
+      }
+    });
+
+    chatLog.appendChild(card);
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+
+  // Lightweight poller — fallback for cases where the in-chat SSE trigger
+  // misses: agent updated status from a non-chat path, user reloaded the
+  // page mid-turn, or the chat panel was closed when DONE fired. Also
+  // catches the reverse transition (DONE → anything else, e.g. restart)
+  // and clears the dedup flag so the next DONE re-fires the card.
+  const _lastLifecycleStatuses = {};
+  async function pollLifecycle() {
+    const eid = currentProjectId();
+    if (!eid) return;
+    let lc;
+    try {
+      lc = await fetch(`/api/engagements/${encodeURIComponent(eid)}/lifecycle`).then(r => r.json());
+    } catch (e) { return; }
+    const steps = lc?.steps || {};
+    const seenSteps = new Set();
+    for (const [step, info] of Object.entries(steps)) {
+      seenSteps.add(step);
+      const status = info?.status || "NOT_STARTED";
+      const key = `${eid}/${step}`;
+      const prev = _lastLifecycleStatuses[key];
+      _lastLifecycleStatuses[key] = status;
+      const isDone = status === "DONE" || status === "DONE_WITH_CONCERNS";
+      const wasDone = prev === "DONE" || prev === "DONE_WITH_CONCERNS";
+      // Transition INTO DONE — render handoff card (idempotent via seen-set).
+      if (prev !== undefined && !wasDone && isDone) {
+        renderPhaseHandoffCard(step, status);
+      }
+      // Transition OUT of DONE — clear the dedup flag so the next DONE re-fires.
+      if (wasDone && !isDone) {
+        _clearPhaseHint(eid, step);
+      }
+    }
+    // If a step disappeared from the lifecycle file (e.g., restart cleared it
+    // entirely), also clear the hint so a fresh completion re-fires.
+    for (const key of Object.keys(_lastLifecycleStatuses)) {
+      if (!key.startsWith(`${eid}/`)) continue;
+      const step = key.slice(eid.length + 1);
+      if (!seenSteps.has(step) && _lastLifecycleStatuses[key]) {
+        _clearPhaseHint(eid, step);
+        delete _lastLifecycleStatuses[key];
+      }
+    }
+  }
+  setInterval(pollLifecycle, 5000);
 
   // Layer A: paint the placeholder + animated dots as soon as the user submits,
   // before any SSE event arrives. The dots are removed when first text streams in
@@ -2143,6 +2446,11 @@
       saveChatHistory(chatSessionId, log);
       updateLoadHistoryButton?.();
     }
+
+    // Render any phase-handoff cards queued from set_step_status tool_result
+    // events this turn. Deferred to here so they sit AFTER the agent's final
+    // text instead of interrupting the stream.
+    _drainPendingPhaseHandoffs();
   }
 
   // Build an interactive form card for one question schema. Submits the
@@ -2427,6 +2735,7 @@
     if (!chatEventSource) openSseStream(chatSessionId);
 
     appendChatMessage("user", displayText);
+    openThinkingBubble();
 
     const eid = currentProjectId();
     const agent = chatAgentSelect?.value || "";
@@ -2511,6 +2820,7 @@
 
     // Show the chosen answer as a user message.
     appendChatMessage("user", displayText);
+    openThinkingBubble();
 
     const eid = currentProjectId();
     const agent = chatAgentSelect?.value || "";
