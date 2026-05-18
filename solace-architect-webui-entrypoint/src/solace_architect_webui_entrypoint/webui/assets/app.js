@@ -1095,7 +1095,7 @@
       openChatWith("", null));
     root.querySelector("#start-design-btn")?.addEventListener("click", () =>
       openChatWith(
-        "Discovery is complete. Read the discovery brief and walk me through the first design scope (topic taxonomy by default, or ask me which scope to start with).",
+        "Discovery is complete. Read the discovery brief, then begin with topic-design (scope 1) and walk through the design scopes in their canonical order. Skip scopes the brief opts out of. Inside each scope, ask me only when there is a blocking decision to make.",
         "SADomainAgent"));
     root.querySelector("#restart-discovery-btn")?.addEventListener("click", () =>
       openRestartDiscoveryModal(eid));
@@ -1796,7 +1796,7 @@
       action = {
         label: "Start Design →",
         agent: "SADomainAgent",
-        prime: "Discovery is complete. Read the discovery brief and walk me through the first design scope (topic taxonomy by default, or ask me which scope to start with).",
+        prime: "Discovery is complete. Read the discovery brief, then begin with topic-design (scope 1) and walk through the design scopes in their canonical order. Skip scopes the brief opts out of. Inside each scope, ask me only when there is a blocking decision to make.",
       };
     }
 
@@ -2114,7 +2114,7 @@
       nextLabel: "Design",
       ctaLabel: "Start Design →",
       agent: "SADomainAgent",
-      kickoff: "Discovery is complete. Read the discovery brief and walk me through the first design scope (topic taxonomy by default, or ask me which scope to start with).",
+      kickoff: "Discovery is complete. Read the discovery brief, then begin with topic-design (scope 1) and walk through the design scopes in their canonical order. Skip scopes the brief opts out of. Inside each scope, ask me only when there is a blocking decision to make.",
     },
     design: {
       nextLabel: "Review",

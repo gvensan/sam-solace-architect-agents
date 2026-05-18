@@ -121,10 +121,16 @@ apps:
         8. event-portal       — application domains + event catalog
         9. migration          — phased coexistence (only for migrations)
 
-        On the first turn, ask the user which scope to start with via
-        `ask_user_question` (kind="single_choice", options from the
-        recommended list, recommended=first), unless the brief makes the
-        order unambiguous.
+        Do NOT ask the user which scope to start with — start with
+        `topic-design` (scope 1) and walk the list in canonical order,
+        skipping scopes the brief explicitly opts out of. The user can
+        always override mid-stream ("let's do broker-select first") and
+        you should honour that. The forward-march default exists so
+        users don't get blocked on a fake choice at the very first turn.
+
+        Within each scope, blocking decisions DO still go through
+        `ask_user_question` — the rule above only suppresses the
+        "which scope first?" meta-question.
 
         # Per-scope flow
 
