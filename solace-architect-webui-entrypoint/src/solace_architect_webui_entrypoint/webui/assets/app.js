@@ -1830,7 +1830,7 @@
 
   // Pull user-visible text out of an A2A event. Walks status.message.parts
   // and any Task-level artifacts; ignores non-text parts (DataPart/FilePart
-  // are tool-call internals, not chat content).
+  // are tool-call internals, surfaced separately via extractDataParts).
   function extractAgentText(ev) {
     const data = ev?.data || {};
     const parts = [];
@@ -1846,6 +1846,23 @@
       .map(p => p.text)
       .join("\n")
       .trim();
+  }
+
+  // Pull SAM data-part signals (tool_invocation_start, tool_result, etc.) out
+  // of an A2A event. Discriminator is data.type per solace_agent_mesh.common.data_parts.
+  function extractDataParts(ev) {
+    const ed = ev?.data || {};
+    const parts = [];
+    const msgParts = ed.status?.message?.parts;
+    if (Array.isArray(msgParts)) parts.push(...msgParts);
+    if (Array.isArray(ed.artifacts)) {
+      for (const a of ed.artifacts) {
+        if (Array.isArray(a.parts)) parts.push(...a.parts);
+      }
+    }
+    return parts
+      .filter(p => p && (p.kind === "data" || p.type === "data") && p.data && typeof p.data === "object")
+      .map(p => p.data);
   }
 
   // While the agent is "thinking", we paint:
@@ -1900,6 +1917,84 @@
     pendingAgentMsg.pills.push({ el: pill, text });
   }
 
+  // Render args dict as `key="abbrev", key2=12` — capped to 3 keys + ellipsis.
+  function summarizeToolArgs(args) {
+    if (!args || typeof args !== "object") return "()";
+    const keys = Object.keys(args);
+    if (!keys.length) return "()";
+    const fmt = (v) => {
+      if (typeof v === "string") return `"${v.length > 30 ? v.slice(0, 27) + "…" : v}"`;
+      if (v === null || typeof v !== "object") return String(v);
+      return Array.isArray(v) ? `[${v.length}]` : "{…}";
+    };
+    return "(" + keys.slice(0, 3).map(k => `${k}=${fmt(args[k])}`).join(", ")
+      + (keys.length > 3 ? ", …" : "") + ")";
+  }
+
+  // tool_invocation_start → add an in-progress trace pill.
+  function appendToolTrace(d) {
+    if (!pendingAgentMsg) openThinkingBubble();
+    const prev = pendingAgentMsg.pills[pendingAgentMsg.pills.length - 1];
+    if (prev) {
+      prev.el.classList.remove("in-progress");
+      prev.el.classList.add("done");
+      const icon = prev.el.querySelector(".activity-pill-icon");
+      if (icon) icon.textContent = "✓";
+    }
+    const pill = document.createElement("div");
+    pill.className = "activity-pill tool-call in-progress";
+    pill.innerHTML = `<span class="activity-pill-icon">⏳</span>`
+      + `<span class="activity-pill-text">`
+      + `<span class="tool-call-name"></span>`
+      + `<span class="tool-call-args"></span>`
+      + `</span>`;
+    pill.querySelector(".tool-call-name").textContent = d.tool_name || "(unknown)";
+    pill.querySelector(".tool-call-args").textContent = summarizeToolArgs(d.tool_args);
+    pendingAgentMsg.pillsContainer.appendChild(pill);
+    const entry = { el: pill, text: d.tool_name || "(unknown)", fnCallId: d.function_call_id };
+    pendingAgentMsg.pills.push(entry);
+    if (d.function_call_id) pendingAgentMsg.pillByCallId.set(d.function_call_id, entry);
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+
+  // tool_result → mark the matching pill done (by function_call_id).
+  function completeToolTrace(d) {
+    if (!pendingAgentMsg) return;
+    const entry = d.function_call_id ? pendingAgentMsg.pillByCallId.get(d.function_call_id) : null;
+    if (!entry) return;
+    entry.el.classList.remove("in-progress");
+    entry.el.classList.add("done");
+    const icon = entry.el.querySelector(".activity-pill-icon");
+    if (icon) icon.textContent = "✓";
+  }
+
+  // Layer A: paint the placeholder + animated dots as soon as the user submits,
+  // before any SSE event arrives. The dots are removed when first text streams in
+  // (or, failing that, in finalizeAgentBubble).
+  function openThinkingBubble() {
+    if (pendingAgentMsg) return;
+    chatLog.querySelector(".chat-empty")?.remove();
+    chatLog.querySelector(".welcome-card")?.remove();
+    const wrap = document.createElement("div");
+    wrap.className = "chat-msg agent agent-thinking agent-turn";
+    const pillsContainer = document.createElement("div");
+    pillsContainer.className = "activity-pills";
+    const dots = document.createElement("div");
+    dots.className = "agent-thinking-dots";
+    dots.innerHTML = "<span></span><span></span><span></span>";
+    const bubble = document.createElement("div");
+    bubble.className = "agent-turn-text";
+    wrap.appendChild(pillsContainer);
+    wrap.appendChild(dots);
+    wrap.appendChild(bubble);
+    chatLog.appendChild(wrap);
+    pendingAgentMsg = {
+      el: wrap, lastText: "", pillsContainer, bubbleEl: bubble,
+      dotsEl: dots, pills: [], pillByCallId: new Map(),
+    };
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+
   function startOrUpdateAgentBubble(text) {
     if (!text) return;
     chatLog.querySelector(".chat-empty")?.remove();
@@ -1908,7 +2003,7 @@
     const isPill = isStatusPill(text);
 
     if (!pendingAgentMsg) {
-      // Open a new agent-turn container with: pills section + live bubble.
+      // Fallback path — SSE event arrived without a prior submit (reconnect, etc).
       const wrap = document.createElement("div");
       wrap.className = "chat-msg agent agent-thinking agent-turn";
       const pillsContainer = document.createElement("div");
@@ -1918,21 +2013,26 @@
       wrap.appendChild(pillsContainer);
       wrap.appendChild(bubble);
       chatLog.appendChild(wrap);
-      pendingAgentMsg = { el: wrap, lastText: text, pillsContainer, bubbleEl: bubble, pills: [] };
+      pendingAgentMsg = {
+        el: wrap, lastText: text, pillsContainer, bubbleEl: bubble,
+        dotsEl: null, pills: [], pillByCallId: new Map(),
+      };
       if (isPill) {
         appendActivityPill(text);
       } else {
         renderAgentMarkdown(bubble, display);
       }
     } else if (text !== pendingAgentMsg.lastText) {
+      // First real text — kill the thinking dots.
+      if (pendingAgentMsg.dotsEl) {
+        pendingAgentMsg.dotsEl.remove();
+        pendingAgentMsg.dotsEl = null;
+      }
       pendingAgentMsg.lastText = text;
       if (isPill) {
-        // New short status — only add a pill if the text differs from
-        // the most recent pill (avoid duplicates).
         const last = pendingAgentMsg.pills[pendingAgentMsg.pills.length - 1];
         if (!last || last.text !== text) appendActivityPill(text);
       } else {
-        // Long / multi-line content — stream into the bubble.
         renderAgentMarkdown(pendingAgentMsg.bubbleEl, display);
       }
     }
@@ -1972,6 +2072,10 @@
 
     if (pendingAgentMsg) {
       pendingAgentMsg.el.classList.remove("agent-thinking");
+      if (pendingAgentMsg.dotsEl) {
+        pendingAgentMsg.dotsEl.remove();
+        pendingAgentMsg.dotsEl = null;
+      }
       // Lock all pills as done (last one still in-progress at this point).
       const lastPill = pendingAgentMsg.pills[pendingAgentMsg.pills.length - 1];
       if (lastPill) {
@@ -2449,6 +2553,12 @@
       try {
         const ev = JSON.parse(e.data);
         if (ev.type === "TaskStatusUpdateEvent") {
+          // Layer B: tool-call traces from SAM data parts.
+          for (const d of extractDataParts(ev)) {
+            if (d.type === "tool_invocation_start") appendToolTrace(d);
+            else if (d.type === "tool_result") completeToolTrace(d);
+            // agent_progress_update / llm_invocation / etc — text channel covers these.
+          }
           const text = extractAgentText(ev);
           if (text) startOrUpdateAgentBubble(text);
         } else if (ev.type === "FinalResponse" || ev.type === "Task") {
@@ -2528,6 +2638,7 @@
 
     appendChatMessage("user", text);
     chatInput.value = "";
+    openThinkingBubble();
 
     const body = { text, session_id: chatSessionId };
     if (agent) body.agent = agent;
