@@ -19,11 +19,15 @@ log = logging.getLogger(__name__)
 async def init(*args, **kwargs):
     """Plugin init hook — runs once when SAM starts the agent.
 
-    Currently a no-op other than confirming the lifecycle module loaded
-    (which is what we want — that load is what triggers the package-level
-    log handler attach).
+    Loading this module activates the package-level log handler attach
+    (the import is the side effect). On top of that, we install the SA
+    after_model_callback telemetry patch — idempotent across agents, so
+    the first agent to start patches and every sibling becomes a no-op.
     """
-    log.info("SADiscoveryAgent lifecycle.init() — plugin package imported, per-plugin log handler active")
+    from solace_architect_core._sam_telemetry_patch import install as _install_telemetry_patch
+
+    _install_telemetry_patch()
+    log.info("SADiscoveryAgent lifecycle.init() — plugin package imported, telemetry patch installed")
     return None
 
 

@@ -17,10 +17,17 @@ log = logging.getLogger(__name__)
 
 
 async def init(*args, **kwargs):
-    """Plugin init hook — runs once when SAM starts the agent."""
+    """Plugin init hook — runs once when SAM starts the agent.
+
+    Also installs the SA after_model_callback telemetry patch
+    (idempotent — see solace_architect_core._sam_telemetry_patch).
+    """
+    from solace_architect_core._sam_telemetry_patch import install as _install_telemetry_patch
+
+    _install_telemetry_patch()
     log.info(
         "SADomainAgent lifecycle.init() — plugin package imported, "
-        "per-plugin log handler active"
+        "telemetry patch installed"
     )
     return None
 
