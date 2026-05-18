@@ -477,7 +477,23 @@ body[data-chat="closed"] .chat-panel { display: none; }
 }
 .quick-reply-chip:hover { background: var(--accent); color: var(--primary); }
 .quick-reply-chip:disabled { opacity: 0.5; cursor: not-allowed; }
+.quick-reply-chip-recommended {
+  background: rgba(0,200,149,0.12);
+  border-color: var(--accent);
+  font-weight: 700;
+}
+.quick-reply-chip-recommended:hover { background: var(--accent); color: var(--primary); }
 .chat-msg.agent.quick-reply-chips.question-answered { opacity: 0.55; }
+/* Long-label chips (the "options" pattern, where each chip is a prose
+   label rather than a single letter) wrap naturally. Stack vertically
+   when there is more than one — looks cleaner than horizontal squeeze. */
+.chat-msg.agent.quick-reply-chips:has(.quick-reply-chip-long) .quick-reply-row {
+  flex-direction: column; align-items: stretch;
+}
+.quick-reply-chip-long {
+  text-align: left; white-space: normal; line-height: 1.35;
+  min-width: 0; padding: 8px 12px;
+}
 
 .chat-form {
   display: flex; flex-direction: column; gap: 8px; padding: 12px;

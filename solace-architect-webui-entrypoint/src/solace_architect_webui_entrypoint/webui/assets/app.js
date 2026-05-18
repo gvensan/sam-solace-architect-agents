@@ -2428,13 +2428,17 @@
 
     // Safety net: if the agent emitted a markdown-style multiple-choice
     // question instead of a ```question block (LLM sometimes ignores
-    // the tool-call rule), detect the "Reply: A, B, C" footer and offer
-    // a clickable chip row + optional note. The user gets the same
-    // form-like UX without typing the letter in chat.
+    // the tool-call rule), try two pattern detectors and offer a
+    // clickable chip row + optional note. The user gets the same
+    // form-like UX without typing the answer in chat.
+    //   1) detectReplyPattern: "Reply: A, B, C" letter-list footers.
+    //   2) detectOptionsPattern: "**Option N (Recommended): Title**"
+    //      headers + "Which option do you prefer?" tail. Catches the
+    //      Domain agent's design-decision shape.
     if (!blocks.length && cleanText) {
-      const replyOptions = detectReplyPattern(cleanText);
-      if (replyOptions) {
-        const chips = renderQuickReplyChips(replyOptions);
+      const detected = detectReplyPattern(cleanText) || detectOptionsPattern(cleanText);
+      if (detected) {
+        const chips = renderQuickReplyChips(detected);
         chatLog.appendChild(chips);
         chatLog.scrollTop = chatLog.scrollHeight;
       }
@@ -2648,6 +2652,51 @@
   // markdown instead of calling ask_user_question. The chip row gives
   // users a click-not-type affordance regardless of which path the LLM
   // chose.
+  // Second safety net for the form-fallback path. The Domain agent
+  // sometimes emits a structured question as markdown with bold
+  // "**Option 1 (Recommended): Title**" / "**Option 2: Title**" headers
+  // and a "Which option do you prefer?" tail. detectReplyPattern's
+  // letter-list logic doesn't catch this — the labels are full prose,
+  // not single letters. detectOptionsPattern picks up the option
+  // headers and produces a richer chip payload with the labels intact.
+  function detectOptionsPattern(text) {
+    if (!text) return null;
+    // Match an option header at line start:
+    //   "**Option 1 (Recommended): Title**"
+    //   "**Option 2: Title**"
+    //   "Option 3: Title"
+    //   "**Option 4 — Title**"   (em dash, no parenthetical)
+    // The label captures the first prose line; pros/cons / bullets are
+    // on subsequent lines and not part of the header.
+    const re = /^\s*(?:\*\*)?\s*Option\s+(\d+)(?:\s*[\(—–\-:]\s*([^\)\n*]+?)\s*\)?)?\s*[:—–\-]?\s*([^\*\n]*?)\s*(?:\*\*)?\s*$/gim;
+    const opts = [];
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const num = m[1];
+      const tag = (m[2] || "").trim();   // could be "Recommended", or empty
+      const tail = (m[3] || "").trim();  // could be the label or empty
+      // Heuristic: if tag is non-empty AND not "Recommended"-ish, treat as label
+      const isRecTag = /^recommended$|^recommend/i.test(tag);
+      const label = tail || (isRecTag ? "" : tag);
+      if (!label) continue;
+      opts.push({
+        id: `option-${num}`,
+        num,
+        label,
+        recommended: isRecTag,
+      });
+    }
+    if (opts.length < 2) return null;
+
+    // Confirm with a question phrase in the tail — guards against false
+    // positives where "Option N:" appears in prose without a real ask.
+    const tail = text.slice(-500).toLowerCase();
+    const hasAsk = /which option|do you prefer|what.?s your preference|please (?:choose|select|pick)|your pick/i.test(tail);
+    if (!hasAsk) return null;
+
+    return { kind: "options", options: opts };
+  }
+
   function detectReplyPattern(text) {
     // Look only at the tail of the message — the "Reply:" prompt is
     // always near the end. Limits false positives where the body
@@ -2690,46 +2739,60 @@
   // Render a quick-reply chip row appended after a markdown agent
   // message. Click = submit (chip behaves like yes_no buttons —
   // immediate, with the note included if filled).
-  function renderQuickReplyChips({ kind, letters }) {
+  function renderQuickReplyChips(detected) {
+    const { kind } = detected;
     const card = document.createElement("div");
     card.className = "chat-msg agent quick-reply-chips";
 
-    const label = document.createElement("div");
-    label.className = "quick-reply-label";
-    label.textContent = "Quick reply:";
-    card.appendChild(label);
+    const labelEl = document.createElement("div");
+    labelEl.className = "quick-reply-label";
+    labelEl.textContent = "Quick reply:";
+    card.appendChild(labelEl);
 
     const row = document.createElement("div");
     row.className = "quick-reply-row";
 
-    const choices = kind === "yes_no" ? ["yes", "no"] : letters;
-    const display = kind === "yes_no"
-      ? { yes: "Yes", no: "No" }
-      : Object.fromEntries(letters.map(l => [l, l]));
+    // Build a list of { value, displayLabel, recommended? } tuples.
+    let chips = [];
+    if (kind === "yes_no") {
+      chips = [
+        { value: "yes", displayLabel: "Yes" },
+        { value: "no",  displayLabel: "No"  },
+      ];
+    } else if (kind === "options") {
+      chips = detected.options.map(o => ({
+        value: o.id,
+        displayLabel: o.label,
+        recommended: !!o.recommended,
+      }));
+    } else {
+      // letter list (single_choice fallback)
+      chips = detected.letters.map(l => ({ value: l, displayLabel: l }));
+    }
 
-    // Track the optional note value so chips can grab it on click.
     let getNote = () => null;
 
-    choices.forEach(value => {
+    chips.forEach(c => {
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "quick-reply-chip";
-      btn.textContent = display[value];
+      if (c.recommended) btn.classList.add("quick-reply-chip-recommended");
+      // "options" chips carry prose labels — opt them into the long-label
+      // layout (left-aligned, wraps, stacked vertically by the parent).
+      if (kind === "options") btn.classList.add("quick-reply-chip-long");
+      btn.textContent = c.recommended ? `★ ${c.displayLabel}` : c.displayLabel;
       btn.addEventListener("click", () => {
         const note = getNote();
-        const displayText = note ? `${display[value]} — ${note}` : display[value];
-        // Lock the whole row so the user can't double-submit.
+        const displayText = note ? `${c.displayLabel} — ${note}` : c.displayLabel;
         Array.from(card.querySelectorAll("button, textarea")).forEach(el => el.disabled = true);
         card.classList.add("question-answered");
-        submitQuickReply({ kind, value, displayText, note, cardEl: card });
+        submitQuickReply({ kind, value: c.value, displayText, note, cardEl: card });
       });
       row.appendChild(btn);
     });
     card.appendChild(row);
 
-    // Note toggle (same UX as the form-card note section).
     getNote = renderNoteSection(card);
-
     return card;
   }
 
