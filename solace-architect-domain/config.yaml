@@ -53,6 +53,11 @@ apps:
       supports_streaming: true
       agent_name: "SADomainAgent"
       display_name: "Solace Architect — Domain"
+      # Opt out of the framework's artifact_management builtin group so the
+      # core's engagement-scoped list_artifacts wins under the same name.
+      # The framework builtin lists artifacts by ADK session-id, not by
+      # engagement/user — useless for our per-user-per-engagement layout.
+      auto_inject_artifact_tools: false
       model_provider:
         - "planning"
 
@@ -252,13 +257,15 @@ apps:
           function_name: "list_projects"
 
         # ---- Artifacts ----
-        # list_artifacts is auto-injected by SAM's artifact_management builtin; declaring it here collides.
         - tool_type: python
           component_module: "solace_architect_core.tools.artifact_tools"
           function_name: "read_artifact"
         - tool_type: python
           component_module: "solace_architect_core.tools.artifact_tools"
           function_name: "write_artifact"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.artifact_tools"
+          function_name: "list_artifacts"
 
         # ---- Decisions + open-items (gap tracking) ----
         - tool_type: python
