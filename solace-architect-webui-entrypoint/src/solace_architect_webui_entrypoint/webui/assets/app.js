@@ -2271,6 +2271,45 @@
   }
   setInterval(pollLifecycle, 5000);
 
+  // Empty-response card: rendered by finalizeAgentBubble when the agent
+  // task ended with no actionable content (no text, no form card, no
+  // markdown-fallback chips, no phase-handoff). The Continue button
+  // submits a "continue" message routed to whichever agent is currently
+  // selected in the dropdown — typically the same agent that just went
+  // silent, so it picks up from where it stopped.
+  function renderAgentEmptyCard() {
+    const card = document.createElement("div");
+    card.className = "chat-msg agent agent-empty";
+    card.innerHTML = `
+      <div class="agent-empty-eyebrow">No follow-up received</div>
+      <p class="agent-empty-body">
+        The agent finished this turn without asking the next question or
+        signalling completion. Your last input was processed (decisions
+        recorded, artifacts written if applicable), but the agent didn't
+        chain to the next step.
+      </p>
+      <p class="agent-empty-body agent-empty-hint">
+        Click <strong>Continue</strong> to nudge the agent forward, or
+        type your own follow-up below.
+      </p>
+      <div class="agent-empty-actions">
+        <button type="button" class="agent-empty-cta">Continue ↻</button>
+      </div>
+    `;
+    card.querySelector(".agent-empty-cta").addEventListener("click", () => {
+      const btn = card.querySelector(".agent-empty-cta");
+      btn.disabled = true;
+      btn.textContent = "Continuing…";
+      const ci = document.getElementById("chat-input");
+      if (ci) {
+        ci.value = "Continue — please proceed with the next step.";
+        chatForm.requestSubmit?.();
+      }
+    });
+    chatLog.appendChild(card);
+    chatLog.scrollTop = chatLog.scrollHeight;
+  }
+
   // Layer A: paint the placeholder + animated dots as soon as the user submits,
   // before any SSE event arrives. The dots are removed when first text streams in
   // (or, failing that, in finalizeAgentBubble).
@@ -2435,13 +2474,28 @@
     //   2) detectOptionsPattern: "**Option N (Recommended): Title**"
     //      headers + "Which option do you prefer?" tail. Catches the
     //      Domain agent's design-decision shape.
+    let renderedChips = false;
     if (!blocks.length && cleanText) {
       const detected = detectReplyPattern(cleanText) || detectOptionsPattern(cleanText);
       if (detected) {
         const chips = renderQuickReplyChips(detected);
         chatLog.appendChild(chips);
         chatLog.scrollTop = chatLog.scrollHeight;
+        renderedChips = true;
       }
+    }
+
+    // Empty-response handling: when the agent finishes without giving
+    // the user anything actionable (no text body, no form card, no
+    // quick-reply chips, no phase-handoff queued), render a small
+    // "agent finished without a follow-up" card with a Continue button.
+    // Without this, the user sees a stuck thinking-dots placeholder
+    // and has no signal that the turn ended. Symptom we hit: Domain
+    // recorded the user's decision then stopped emitting tool calls,
+    // leaving the chat in apparent limbo.
+    const producedActionable = cleanText || blocks.length || renderedChips || _pendingPhaseHandoffs.length;
+    if (!producedActionable) {
+      renderAgentEmptyCard();
     }
 
     // Persist the final text to history (forms are not persisted — on reload

@@ -205,6 +205,27 @@ apps:
         object verbatim. Do not duplicate the question in markdown.
         AT MOST ONE `ask_user_question` per turn.
 
+        # Per-turn invariant — never end a turn empty
+
+        EVERY turn MUST end with at least one of:
+
+          - `ask_user_question(...)` (followed by the schema-echo block) —
+            preferred. This is the normal flow: record any decision the
+            user just confirmed, then ask the NEXT blocking decision in
+            the current scope or the move-on prompt for the next scope.
+          - `set_step_status(step="design", status=...)` with a clear
+            `note` — use this when there is genuinely nothing left to ask
+            (status=DONE), when a blocking open-item makes further
+            progress impossible (status=BLOCKED), or when you're waiting
+            on something off-channel (status=NEEDS_CONTEXT with a note
+            explaining what you need).
+
+        An empty turn — `record_decision` only, then stop — is a bug.
+        The user sees an empty bubble and gets stuck. If you recorded a
+        decision, the very next step is to either ask the next decision
+        OR call `set_step_status` to signal the step state. Both is
+        fine; neither is not.
+
         # Completion status
 
         Call `set_step_status(engagement_id, step="design", status=...,
