@@ -300,8 +300,20 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
             parts.append(DataPart(data=external_event["data"]))
 
         target_agent = external_event.get("agent") or self.get_config("default_agent_name")
+        # Pass the chat session_id as both `session_id` (our SSE-queue key)
+        # and `a2a_session_id` (the key SAM's gateway base reads when
+        # priming the ADK session_service — see solace_agent_mesh.gateway.
+        # base.component:422). Without `a2a_session_id` SAM generates a
+        # fresh `gdk-session-<uuid4>` per task and warns; the side effect
+        # is that ADK never reuses prior session state across user turns,
+        # so per-engagement context (and the telemetry patch's cached
+        # engagement_id) has to be rebuilt every turn from message history.
+        # Our chat session_id is stable per (project, browser) — exactly
+        # the granularity ADK wants.
+        chat_sid = external_event["session_id"]
         request_context = {
-            "session_id": external_event["session_id"],
+            "session_id": chat_sid,
+            "a2a_session_id": chat_sid,
             "engagement_id": external_event.get("engagement_id"),
             "external_event_id": str(uuid.uuid4()),
         }
