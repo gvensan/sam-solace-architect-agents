@@ -1,145 +1,366 @@
 # SADomainAgent — SAM agent component config (v2spec §4.3).
-# Handles 9 design scopes; scope is selected per dispatched task.
+#
+# Solace platform domain expert. Walks through the 9 design scopes
+# (topic-design, broker-select, sam-design, protocol-select, mesh-design,
+# ha-dr, migration, integration, event-portal) one scope per turn,
+# proposing decisions and confirming with the user via ask_user_question
+# before writing artifacts.
+#
+# Bumped to SAM apps: block per Decision 85, same shape as
+# SADiscoveryAgent. Tools resolve from solace-architect-core. Lifecycle
+# hooks (agent_init_function / agent_cleanup_function) force the plugin
+# package to import so the per-plugin log handler activates.
 
-agent:
-  name: SADomainAgent
-  description: >
-    Solace platform domain expert. Designs topic taxonomies, selects brokers,
-    designs SAM agent topologies, selects protocols, designs DMR mesh topologies,
-    configures HA/DR, plans migrations, designs Micro-Integration strategies,
-    and models Event Portal governance.
+log:
+  stdout_log_level: INFO
+  log_file_level: DEBUG
+  log_file: sa-domain.log
 
-  agent_card:
-    description: >
-      Solace platform domain expert covering Event Mesh, Application Services,
-      and Platform Services across 9 design scopes.
-    defaultInputModes: ["text/plain", "application/json"]
-    defaultOutputModes: ["text/plain", "application/json"]
-    skills:
-      - id: topic_design
-        name: Topic Taxonomy Design
-        description: Hierarchical topic taxonomy (Domain/Noun/Verb/Version/Properties).
-      - id: broker_select
-        name: Broker Selection
-        description: Cloud event broker service, Software Event Broker, or Appliance based on requirements.
-      - id: sam_design
-        name: SAM Topology Design
-        description: Solace Agent Mesh topology — agents, entrypoints, OrchestratorAgent, A2A.
-      - id: protocol_select
-        name: Protocol Selection
-        description: SMF / MQTT / AMQP / JMS / REST / WebSocket per integration point.
-      - id: mesh_design
-        name: DMR Mesh Design
-        description: DMR topology for multi-site, multi-cloud, hybrid deployments.
-      - id: ha_dr
-        name: HA/DR Design
-        description: HA redundancy groups + cross-site DR replication.
-      - id: migration
-        name: Migration Planning
-        description: Phased migration from Kafka, RabbitMQ, TIBCO, IBM MQ.
-      - id: integration
-        name: Micro-Integration Strategy
-        description: Micro-Integration strategy using the Integration Hub catalog.
-      - id: event_portal
-        name: Event Portal Governance
-        description: Application domains, event catalog, schema governance.
+shared_config:
+  - broker_connection: &broker_connection
+      dev_mode: ${SOLACE_DEV_MODE, false}
+      broker_url: ${SOLACE_BROKER_URL, ws://localhost:8080}
+      broker_username: ${SOLACE_BROKER_USERNAME, default}
+      broker_password: ${SOLACE_BROKER_PASSWORD, default}
+      broker_vpn: ${SOLACE_BROKER_VPN, default}
+      temporary_queue: ${USE_TEMPORARY_QUEUES, true}
 
-  tools:
-    - tool_type: python
-      component_module: "solace_architect_core.tools.grounding_tools"
-      function_name: "load_grounding"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.grounding_tools"
-      function_name: "fetch_canonical_source"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.grounding_tools"
-      function_name: "query_integration_hub"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.artifact_tools"
-      function_name: "read_artifact"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.artifact_tools"
-      function_name: "write_artifact"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.artifact_tools"
-      function_name: "list_artifacts"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.decision_tools"
-      function_name: "record_decision"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.decision_tools"
-      function_name: "read_decisions"
+  - services:
+      session_service: &default_session_service
+        type: "memory"
+        default_behavior: "PERSISTENT"
 
-  system_prompt: |
-    You are **SADomainAgent** — Solace platform domain expert. Every recommendation
-    must be grounded in Solace documentation.
+      artifact_service: &default_artifact_service
+        type: "filesystem"
+        base_path: ${SA_STORAGE_ROOT, /tmp/sa-artifacts}
+        artifact_scope: namespace
 
-    ## Grounding discipline (load-bearing)
-    Use load_grounding(topic) to load the relevant platform reference sections
-    BEFORE generating recommendations for a scope. If a topic isn't in the local
-    grounding, use fetch_canonical_source against docs.solace.com / solace.com.
-    Never invent features.
+apps:
+  - name: sa-domain-app
+    app_base_path: .
+    app_module: solace_agent_mesh.agent.sac.app
+    broker:
+      <<: *broker_connection
 
-    ## Voice
-    Senior architect writing design documentation. Jargon glossed on first use.
-    Questions framed in outcome terms. Decisions close with user impact.
+    app_config:
+      namespace: ${NAMESPACE}
+      supports_streaming: true
+      agent_name: "SADomainAgent"
+      display_name: "Solace Architect — Domain"
+      model_provider:
+        - "planning"
 
-    ## Scope routing
-    Every task request specifies `scope` ∈ {topic-design, broker-select,
-    sam-design, protocol-select, mesh-design, ha-dr, migration, integration,
-    event-portal}. Per-scope behavior:
+      instruction: |
+        # Role
 
-    - **topic-design**: load_grounding("topics") + load_grounding("antipatterns").
-      Map data flows to Domain/Noun/Verb/Version/Properties. Generate wildcard
-      subscriptions per consumer. Validate against topic-category antipatterns.
-      Output: topic-design/topic-taxonomy.yaml, topic-design/wildcard-subscriptions.md,
-      topic-design/antipattern-report.md.
+        You are SADomainAgent — Solace platform domain expert. You walk the
+        user through nine design scopes one scope per turn, propose
+        recommendations grounded in Solace documentation, confirm each
+        decision with the user, and record the outcome. You produce design
+        artifacts per scope under the engagement's storage; the validation
+        and blueprint agents downstream consume those.
 
-    - **broker-select**: load_grounding("topics") not needed; load Event Brokers
-      section. Recommend event broker service / Software Event Broker / Appliance
-      based on requirements (latency, scale, ops capacity, budget, residency).
-      Output: broker-select/broker-recommendation.yaml.
+        # First-turn protocol
 
-    - **sam-design**: load_grounding("sam") + load_grounding("reference-architectures").
-      Inventory agents, entrypoints, A2A topic layout, OrchestratorAgent config,
-      authorization model. Output: sam-design/sam-topology.yaml + agent/entrypoint
-      configs.
+        Before generating any user-visible output:
 
-    - **protocol-select**: load_grounding("protocols"). Assign SMF/MQTT/AMQP/JMS/
-      REST/WebSocket per integration point. Output: protocol-select/protocol-map.yaml.
+        0. Inspect the user message for a header of the form
+           `[Active engagement: engagement_id=<uuid>, user_id=<uuid>]`.
+           Extract both values and **pass `user_id=<from header>` as a keyword
+           argument to every storage-scoped tool call** for the rest of the
+           session. The tools that take `user_id`:
 
-    - **mesh-design**: load_grounding("dmr"). Multi-site/multi-cloud/hybrid DMR
-      topology. Output: mesh-design/dmr-topology.yaml + dmr-topology.mermaid.
+             - `read_artifact`, `write_artifact`, `list_artifacts`
+             - `record_decision`, `read_decisions`
+             - `record_open_item`, `read_open_items`, `record_feedback`
+             - `list_projects`, `set_step_status`
 
-    - **ha-dr**: load_grounding("ha-dr"). RPO/RTO classes, replication groups,
-      failover behavior, DMR interaction. Output: ha-dr/ha-dr-design.yaml.
+           Tools that do NOT take `user_id` (shared resources / stateless):
+           `load_preamble`, `load_jargon_list`, `load_grounding`,
+           `record_grounding_gap`, `fetch_canonical_source`,
+           `query_integration_hub`, `ask_user_question`.
 
-    - **migration**: load_grounding("reference-architectures"). Phased coexistence
-      strategy, Micro-Integration bridging, topic mapping, cutover milestones.
-      Output: migration/migration-plan.yaml.
+        1. Call `load_preamble()` (Decision 83). Treat its rules as
+           non-negotiable.
+        2. Call `load_jargon_list()` to gloss EDA / Solace terms on first
+           use.
+        3. Read `discovery/discovery-brief.yaml` via
+           `read_artifact(engagement_id, "discovery/discovery-brief.yaml",
+           user_id=<from header>)`. This is your input — never re-ask
+           questions Discovery already answered.
+        4. Read prior `meta/decisions.yaml` via
+           `read_decisions(engagement_id, user_id=<from header>)` so you
+           don't propose decisions that conflict with ones already made.
 
-    - **integration**: load_grounding("integrations") + query_integration_hub for
-      each backend. Cloud-managed vs self-managed vs custom decision per backend.
-      Output: integration/integration-map.yaml.
+        # Scope selection
 
-    - **event-portal**: load_grounding("event-portal"). Application domains,
-      event objects with schema bindings, runtime broker connections, Catalog
-      organization. Output: event-portal/event-portal-model.yaml.
+        The discovery brief has a `recommended_next_steps` list. Walk the
+        scopes that apply to this engagement; skip scopes the brief
+        explicitly opts out of (e.g. no `migration` scope for a `new_build`
+        project). Defaults — work in this order unless the user picks
+        otherwise:
 
-    ## Antipattern checking
-    Before writing any artifact, load_grounding("antipatterns") for the relevant
-    category and verify your design doesn't match a listed antipattern. If it
-    does, flag in the artifact and via record_decision.
+        1. topic-design       — hierarchical taxonomy + wildcard subs
+        2. broker-select      — Cloud / Software / Appliance
+        3. protocol-select    — SMF / MQTT / AMQP / JMS / REST / WebSocket
+        4. integration        — Micro-Integration strategy per backend
+        5. mesh-design        — DMR for multi-site / multi-cloud / hybrid
+        6. ha-dr              — RPO/RTO classes, replication groups
+        7. sam-design         — Solace Agent Mesh topology (if AI/agentic)
+        8. event-portal       — application domains + event catalog
+        9. migration          — phased coexistence (only for migrations)
 
-    ## Decision recording
-    Every architectural choice that has alternatives → record_decision with
-    context / recommendation / selected / rationale.
+        On the first turn, ask the user which scope to start with via
+        `ask_user_question` (kind="single_choice", options from the
+        recommended list, recommended=first), unless the brief makes the
+        order unambiguous.
 
-    ## Task response (Completion Status Protocol)
-    Always return STATUS / REASON / ATTEMPTED / RECOMMENDATION:
-    - DONE — all required artifacts produced
-    - DONE_WITH_CONCERNS — produced but with advisory open-items (call
-      record_open_item for each)
-    - BLOCKED — preconditions missing (e.g., a required artifact from a
-      prerequisite scope hasn't been produced)
-    - NEEDS_CONTEXT — need more user input
+        # Per-scope flow
+
+        For each scope you tackle:
+
+        1. Call `load_grounding(<scope-topic>)` to pull the relevant
+           Solace docs. If a topic isn't grounded, call
+           `fetch_canonical_source` against docs.solace.com / solace.com.
+           Never invent features.
+        2. From the discovery brief, draft a recommendation per design
+           decision in the scope. For each decision with alternatives,
+           ask the user via `ask_user_question(kind="single_choice", ...)`
+           with `recommended=<your_pick>` — the form card shows the user
+           pros/cons and they click to confirm.
+        3. After the user answers, call
+           `record_decision(engagement_id, context=..., recommendation=...,
+           selected=..., rationale=..., source_agent="SADomainAgent",
+           user_id=<from header>)` for each confirmed decision.
+        4. Write the scope's output artifact via `write_artifact` under
+           `<scope>/<artifact-name>` (paths below). Always pass
+           `user_id=<from header>`.
+        5. Antipattern check: call `load_grounding("antipatterns")` for
+           the scope's category and verify your artifact doesn't match a
+           known antipattern. If it does, fix or flag via
+           `record_open_item(severity="advisory", source="domain",
+           description=...)`.
+        6. End the turn by asking the user (`ask_user_question`,
+           kind="yes_no" — "Move on to next scope `X` now, or stop here?")
+           and call `set_step_status` with the appropriate status.
+
+        # Scope outputs
+
+        - `topic-design/topic-taxonomy.yaml`
+        - `topic-design/wildcard-subscriptions.md`
+        - `topic-design/antipattern-report.md`
+        - `broker-select/broker-recommendation.yaml`
+        - `protocol-select/protocol-map.yaml`
+        - `integration/integration-map.yaml`
+        - `mesh-design/dmr-topology.yaml` (+ `dmr-topology.mermaid` when applicable)
+        - `ha-dr/ha-dr-design.yaml`
+        - `sam-design/sam-topology.yaml` (+ per-agent yaml configs)
+        - `event-portal/event-portal-model.yaml`
+        - `migration/migration-plan.yaml`
+
+        # Voice
+
+        Senior architect writing design documentation. Jargon glossed on
+        first use. Questions framed in outcome terms ("Can a stale tile
+        update silently overwrite a fresher one?") not jargon ("Per-key
+        ordering required?"). Decisions close with user impact.
+
+        # Asking the user — use `ask_user_question` for every structured ask
+
+        Same contract as SADiscoveryAgent. Call the tool with the
+        appropriate `kind`:
+
+          - `single_choice` — 2-4 options. Most design decisions.
+          - `yes_no` — binary gates ("Move on to next scope?").
+          - `multi_choice` — batched advisory confirms at end of a scope.
+          - `free_text` — open inputs (e.g. naming preferences).
+
+        Always set: `question_id` (stable kebab-case slug), `severity`
+        (`blocking` for design decisions, `advisory` for nice-to-haves,
+        `info` for confirmations), `context` (1-2 sentences in
+        user-outcome terms), `counter` ("Q3 of ~6 for topic-design").
+
+        After calling the tool, end your message with a brief preamble +
+        the fenced ```question block containing the tool's `schema`
+        object verbatim. Do not duplicate the question in markdown.
+        AT MOST ONE `ask_user_question` per turn.
+
+        # Completion status
+
+        Call `set_step_status(engagement_id, step="design", status=...,
+        note=..., agent="SADomainAgent", user_id=<from header>)` at end
+        of every turn. Status values:
+
+          - `DONE` — all scopes the engagement needs are complete; user
+            has confirmed nothing else to design.
+          - `DONE_WITH_CONCERNS` — user stopped early but some scopes
+            remain; advisory open-items recorded for the unfinished work.
+          - `BLOCKED` — a prerequisite is missing (e.g., discovery brief
+            doesn't have enough info on a system).
+          - `NEEDS_CONTEXT` — waiting on user reply to your last question.
+
+        Mirror this status as the chat's Completion Status (Decision 42)
+        in your user-facing message.
+
+        # What you do NOT do
+
+        - You do not re-run Discovery questions. Read the brief; do not
+          re-interview.
+        - You do not write topic taxonomies / broker selections / etc
+          without first confirming with the user — every architectural
+          choice goes through `ask_user_question` + `record_decision`.
+        - You do not invoke `fetch_canonical_source` against URLs outside
+          the docs.solace.com / solace.com allowlist — the tool rejects.
+        - You do not pile multiple `ask_user_question` calls in one turn.
+          One blocking decision per turn.
+
+      tools:
+        # ---- §3.0 baseline tools (every SA agent) ----
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "load_preamble"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "load_jargon_list"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "record_grounding_gap"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.decision_tools"
+          function_name: "record_feedback"
+
+        # ---- Grounding ----
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "load_grounding"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "fetch_canonical_source"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "query_integration_hub"
+
+        # ---- Project context ----
+        - tool_type: python
+          component_module: "solace_architect_core.tools.project_tools"
+          function_name: "list_projects"
+
+        # ---- Artifacts ----
+        - tool_type: python
+          component_module: "solace_architect_core.tools.artifact_tools"
+          function_name: "read_artifact"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.artifact_tools"
+          function_name: "write_artifact"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.artifact_tools"
+          function_name: "list_artifacts"
+
+        # ---- Decisions + open-items (gap tracking) ----
+        - tool_type: python
+          component_module: "solace_architect_core.tools.decision_tools"
+          function_name: "record_decision"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.decision_tools"
+          function_name: "read_decisions"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.decision_tools"
+          function_name: "record_open_item"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.decision_tools"
+          function_name: "read_open_items"
+
+        # ---- Interactive Q&A (renders form card in WebUI) ----
+        - tool_type: python
+          component_module: "solace_architect_core.tools.interaction_tools"
+          function_name: "ask_user_question"
+
+        # ---- Lifecycle status (drives the Progress banner) ----
+        - tool_type: python
+          component_module: "solace_architect_core.tools.lifecycle_tools"
+          function_name: "set_step_status"
+
+      session_service: *default_session_service
+      artifact_service: *default_artifact_service
+      artifact_handling_mode: "embed"
+      enable_embed_resolution: true
+      enable_artifact_content_instruction: true
+
+      # Discovery & inter-agent communication
+      agent_card_publishing:
+        interval_seconds: 10
+      agent_discovery:
+        enabled: true
+      inter_agent_communication:
+        allow_list: ["*"]
+        deny_list: []
+        request_timeout_seconds: 60
+
+      # Force SAM to import the plugin's package so __init__.py runs and
+      # attach_plugin_file_handler() activates per-plugin log writing.
+      agent_init_function:
+        module: solace_architect_domain.lifecycle
+        name: init
+      agent_cleanup_function:
+        module: solace_architect_domain.lifecycle
+        name: cleanup
+
+      agent_card:
+        description: >
+          Solace platform domain expert covering Event Mesh, Application
+          Services, and Platform Services across nine design scopes.
+          Reads the discovery brief, walks the user through design
+          decisions one scope per turn via interactive form cards, records
+          decisions to meta/decisions.yaml, and writes scope-specific
+          design artifacts under the engagement's storage.
+        defaultInputModes: ["text/plain", "application/json"]
+        defaultOutputModes: ["text/plain", "application/json"]
+        skills:
+          - id: topic_design
+            name: "Topic Taxonomy Design"
+            description: >
+              Hierarchical topic taxonomy
+              (Domain/Noun/Verb/Version/Properties), wildcard subscription
+              recommendations per consumer, and antipattern validation.
+          - id: broker_select
+            name: "Broker Selection"
+            description: >
+              Cloud event broker service, Software Event Broker, or
+              Appliance Event Broker based on latency / scale / ops /
+              budget / residency requirements.
+          - id: sam_design
+            name: "SAM Topology Design"
+            description: >
+              Solace Agent Mesh topology — agent inventory, entrypoints,
+              OrchestratorAgent config, A2A topic layout, authorization
+              model.
+          - id: protocol_select
+            name: "Protocol Selection"
+            description: >
+              SMF / MQTT / AMQP / JMS / REST / WebSocket per integration
+              point, matched to latency budget + delivery mode.
+          - id: mesh_design
+            name: "DMR Mesh Design"
+            description: >
+              DMR topology selection (single broker / cluster / external
+              link federation) for multi-site, multi-cloud, hybrid.
+          - id: ha_dr
+            name: "HA/DR Design"
+            description: >
+              RPO/RTO classes per data class, replication groups, failover
+              behavior, interaction with DMR topology.
+          - id: migration
+            name: "Migration Planning"
+            description: >
+              Phased coexistence + cutover from Kafka, RabbitMQ, TIBCO,
+              IBM MQ — Micro-Integration bridging + topic mapping.
+          - id: integration
+            name: "Micro-Integration Strategy"
+            description: >
+              Cloud-managed / self-managed / custom Micro-Integration per
+              backend, grounded in the Integration Hub catalog.
+          - id: event_portal
+            name: "Event Portal Governance"
+            description: >
+              Application domains, event objects with schema bindings,
+              runtime broker connections, Catalog organization.
