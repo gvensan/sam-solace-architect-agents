@@ -430,11 +430,12 @@
   const VIEWS = {
     overview: async (root, eid) => {
       try {
-        const [stats, intakeRes, artifacts, lifecycle] = await Promise.all([
+        const [stats, intakeRes, artifacts, lifecycle, openItems] = await Promise.all([
           fetch(`/api/engagements/${encodeURIComponent(eid)}/overview`).then(r => r.json()),
           fetch(`/api/intake/load/${encodeURIComponent(eid)}`).then(r => r.json()),
           fetch(`/api/engagements/${encodeURIComponent(eid)}/artifacts`).then(r => r.json()).catch(() => []),
           fetch(`/api/engagements/${encodeURIComponent(eid)}/lifecycle`).then(r => r.json()).catch(() => ({ steps: {} })),
+          fetch(`/api/engagements/${encodeURIComponent(eid)}/open-items?status=open&severity=blocking`).then(r => r.json()).catch(() => []),
         ]);
         const intake = (intakeRes && intakeRes.intake) || {};
         const activeProject = projects.find(p => p.id === eid);
@@ -474,8 +475,56 @@
           || hasDesignArtifact
         );
 
+        // Same for Review — driven by SAOrchestratorAgent's set_step_status
+        // for step="review" after the 4 reviewers return. A review artifact
+        // (reviews/*-review.md) means at least one reviewer finished even if
+        // the orchestrator hasn't aggregated yet.
+        const reviewStatus = lifecycle?.steps?.review?.status || "NOT_STARTED";
+        const reviewNote = lifecycle?.steps?.review?.note || "";
+        const reviewDone = reviewStatus === "DONE" || reviewStatus === "DONE_WITH_CONCERNS";
+        const hasReviewArtifact = artifacts.some(a => a.startsWith("reviews/"));
+        const reviewInProgress = !reviewDone && (
+          (reviewStatus !== "NOT_STARTED")
+          || hasReviewArtifact
+        );
+
+        // Validation — SAValidationAgent writes validation/validation-report.{md,yaml}
+        // and calls set_step_status(step="validation"). Direct-dispatched.
+        const validationStatus = lifecycle?.steps?.validation?.status || "NOT_STARTED";
+        const validationNote = lifecycle?.steps?.validation?.note || "";
+        const validationDone = validationStatus === "DONE" || validationStatus === "DONE_WITH_CONCERNS";
+        const hasValidationArtifact = artifacts.some(a => a.startsWith("validation/"));
+        const validationInProgress = !validationDone && (
+          (validationStatus !== "NOT_STARTED")
+          || hasValidationArtifact
+        );
+
+        // Blueprint — SABlueprintAgent writes blueprint/* + exports/engagement-package.zip.
+        const blueprintStatus = lifecycle?.steps?.blueprint?.status || "NOT_STARTED";
+        const blueprintNote = lifecycle?.steps?.blueprint?.note || "";
+        const blueprintDone = blueprintStatus === "DONE" || blueprintStatus === "DONE_WITH_CONCERNS";
+        const hasBlueprintArtifact = artifacts.some(a => a.startsWith("blueprint/") || a.startsWith("exports/"));
+        const blueprintInProgress = !blueprintDone && (
+          (blueprintStatus !== "NOT_STARTED")
+          || hasBlueprintArtifact
+        );
+
+        // Provisioning — SAProvisioningAgent writes provisioning/* (opt-in).
+        const provisioningStatus = lifecycle?.steps?.provisioning?.status || "NOT_STARTED";
+        const provisioningNote = lifecycle?.steps?.provisioning?.note || "";
+        const provisioningDone = provisioningStatus === "DONE" || provisioningStatus === "DONE_WITH_CONCERNS";
+        const hasProvisioningArtifact = artifacts.some(a => a.startsWith("provisioning/"));
+        const provisioningInProgress = !provisioningDone && (
+          (provisioningStatus !== "NOT_STARTED")
+          || hasProvisioningArtifact
+        );
+
         // Active step on the lifecycle banner.
-        const activeStepId = designDone ? "review"
+        const activeStepId = provisioningDone ? "complete"
+          : (provisioningInProgress || blueprintDone) ? "provisioning"
+          : (blueprintInProgress || validationDone) ? "blueprint"
+          : (validationInProgress || reviewDone) ? "validation"
+          : (reviewInProgress || designDone) ? "review"
           : (designInProgress || discoveryDone) ? "design"
           : (discoveryInProgress || hasIntake) ? "discovery"
           : "intake";
@@ -483,12 +532,30 @@
         if (hasIntake) completedSteps.add("intake");
         if (discoveryDone) completedSteps.add("discovery");
         if (designDone) completedSteps.add("design");
+        if (reviewDone) completedSteps.add("review");
+        if (validationDone) completedSteps.add("validation");
+        if (blueprintDone) completedSteps.add("blueprint");
+        if (provisioningDone) completedSteps.add("provisioning");
+
+        // Blocking open-items affecting Blueprint — typically recorded by
+        // SAValidationAgent with affecting_step="blueprint". When any are
+        // open, Start Blueprint must be disabled. Without this gate, the
+        // user can bypass validation guardrails on a DONE_WITH_CONCERNS
+        // verdict.
+        const blueprintBlockers = Array.isArray(openItems)
+          ? openItems.filter(i => i?.affecting_step === "blueprint" && i?.status === "open")
+          : [];
 
         // One contextual CTA, always shown — content depends on lifecycle state.
         const cta = renderProgressCta({
           eid, hasIntake, discoveryStatus, discoveryNote,
           discoveryInProgress, openItemsCount,
           designStatus, designNote, designDone, designInProgress,
+          reviewStatus, reviewNote, reviewDone, reviewInProgress,
+          validationStatus, validationNote, validationDone, validationInProgress,
+          blueprintStatus, blueprintNote, blueprintDone, blueprintInProgress,
+          provisioningStatus, provisioningNote, provisioningDone, provisioningInProgress,
+          blueprintBlockers,
         });
 
         root.innerHTML = `
@@ -937,7 +1004,13 @@
   function renderProgressCta({
     eid, hasIntake, discoveryStatus, discoveryNote, discoveryInProgress, openItemsCount,
     designStatus, designNote, designDone, designInProgress,
+    reviewStatus, reviewNote, reviewDone, reviewInProgress,
+    validationStatus, validationNote, validationDone, validationInProgress,
+    blueprintStatus, blueprintNote, blueprintDone, blueprintInProgress,
+    provisioningStatus, provisioningNote, provisioningDone, provisioningInProgress,
+    blueprintBlockers,
   }) {
+    blueprintBlockers = blueprintBlockers || [];
     if (!hasIntake) {
       return `
         <div class="progress-cta" role="region" aria-label="Intake required">
@@ -975,7 +1048,209 @@
         <span class="secondary-action-hint">— discovery brief changed? wipe design output and start fresh</span>
       </div>`;
 
-    // Design DONE — Review will come next when that agent lands.
+    // Provisioning DONE — engagement complete.
+    if (provisioningDone) {
+      const badge = provisioningStatus === "DONE_WITH_CONCERNS"
+        ? `<span class="status-badge advisory">Done with concerns</span>`
+        : `<span class="status-badge done">Done</span>`;
+      return `
+        <div class="progress-cta done" role="region" aria-label="Provisioning complete">
+          <div class="progress-cta-body">
+            <div class="progress-cta-eyebrow">Engagement complete</div>
+            <h2>Provisioning is complete ${badge}</h2>
+            ${provisioningNote ? `<p>${escapeHtml(provisioningNote)}</p>` : ""}
+            <p>The Event Portal model has been provisioned. AsyncAPI specs
+            are exported per application under <code>provisioning/asyncapi/</code>.
+            The full engagement package (architecture, runbook, audience
+            packs) is at <code>exports/engagement-package.zip</code>.</p>
+          </div>
+          <div class="progress-cta-actions progress-cta-actions-row">
+            <a class="cta-btn" href="/projects/${encodeURIComponent(eid)}/artifacts">View artifacts →</a>
+          </div>
+        </div>`;
+    }
+
+    // Provisioning in progress.
+    if (provisioningInProgress) {
+      return `
+        <div class="progress-cta in-progress" role="region" aria-label="Provisioning in progress">
+          <div class="progress-cta-body">
+            <div class="progress-cta-eyebrow">Provisioning in progress</div>
+            <h2>Continue Provisioning in chat</h2>
+            <p>SAProvisioningAgent is creating Event Portal objects.
+            ${provisioningNote ? `<em>${escapeHtml(provisioningNote)}</em> ` : ""}
+            In Interactive mode, the agent pauses between layers for
+            Apply / Skip confirmation. Click <strong>Continue in chat →</strong>
+            to answer the next prompt.</p>
+          </div>
+          <div class="progress-cta-actions progress-cta-actions-row">
+            <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
+          </div>
+        </div>`;
+    }
+
+    // Blueprint DONE — Provisioning is opt-in.
+    if (blueprintDone) {
+      const badge = blueprintStatus === "DONE_WITH_CONCERNS"
+        ? `<span class="status-badge advisory">Done with concerns</span>`
+        : `<span class="status-badge done">Done</span>`;
+      return `
+        <div class="progress-cta done" role="region" aria-label="Blueprint complete">
+          <div class="progress-cta-body">
+            <div class="progress-cta-eyebrow">Blueprint → Provisioning (opt-in)</div>
+            <h2>Blueprint is complete ${badge}</h2>
+            ${blueprintNote ? `<p>${escapeHtml(blueprintNote)}</p>` : ""}
+            <p>The deliverable package is assembled — architecture narrative,
+            ops runbook, diagrams, and 5 audience packs bundled into
+            <code>exports/engagement-package.zip</code>. The engagement
+            can end here, or you can opt-in to live Event Portal
+            <strong>Provisioning</strong> — SAProvisioningAgent will
+            create EP objects via the EP Designer API (interactive by
+            default, with Auto mode if you prefer hands-off).</p>
+            <p class="muted" style="border-left: 3px solid var(--accent, #00C895); padding-left: 10px; font-size: 12px;">
+              <strong>Note:</strong> Live EP API calls are Phase-5 work
+              and not yet wired (see <code>ep_designer_mcp_tools.py</code>
+              — every <code>create_*</code> returns a structured
+              "not yet implemented" response). Pre-flight checks +
+              dry-run plan generation work today; actual provisioning
+              halts at the first create call.
+            </p>
+          </div>
+          <div class="progress-cta-actions progress-cta-actions-row">
+            <button id="start-provisioning-btn" class="cta-btn" data-mode="interactive">Start Provisioning →</button>
+            <button id="start-provisioning-auto-btn" class="cta-btn cta-btn-auto" data-mode="auto"
+                    title="Auto mode: provision all layers without per-layer confirmation; first error halts and reports.">Start Auto ⚡</button>
+            <a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View blueprint →</a>
+          </div>
+        </div>`;
+    }
+
+    // Blueprint in progress.
+    if (blueprintInProgress) {
+      return `
+        <div class="progress-cta in-progress" role="region" aria-label="Blueprint in progress">
+          <div class="progress-cta-body">
+            <div class="progress-cta-eyebrow">Blueprint in progress</div>
+            <h2>Assembling the engagement package</h2>
+            <p>SABlueprintAgent is composing the architecture narrative,
+            runbook, diagrams, and 5 audience packs.
+            ${blueprintNote ? `<em>${escapeHtml(blueprintNote)}</em> ` : ""}
+            Click <strong>Continue in chat →</strong> to follow along —
+            the package ZIP appears under <code>exports/</code> when ready.</p>
+          </div>
+          <div class="progress-cta-actions progress-cta-actions-row">
+            <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
+          </div>
+        </div>`;
+    }
+
+    // Validation DONE — Blueprint is next, gated on blocking open-items.
+    if (validationDone) {
+      const badge = validationStatus === "DONE_WITH_CONCERNS"
+        ? `<span class="status-badge advisory">Done with concerns</span>`
+        : `<span class="status-badge done">Done</span>`;
+      // Gate: SAValidationAgent records blocking open-items with
+      // affecting_step="blueprint". When any are open, the Start
+      // Blueprint button must be disabled — otherwise the user can
+      // bypass validation guardrails when the verdict is
+      // DONE_WITH_CONCERNS.
+      const blockedByOpenItems = blueprintBlockers.length > 0;
+      const blockerList = blockedByOpenItems
+        ? `<div class="progress-blocker-list">
+             <strong>${blueprintBlockers.length} blocking open-item${blueprintBlockers.length === 1 ? "" : "s"} must be resolved first:</strong>
+             <ul>${blueprintBlockers.slice(0, 5).map(i => `<li><code>${escapeHtml(i.id || "?")}</code>: ${escapeHtml(i.description || "")}</li>`).join("")}</ul>
+             ${blueprintBlockers.length > 5 ? `<small>(…and ${blueprintBlockers.length - 5} more — see Open Items)</small>` : ""}
+           </div>`
+        : "";
+      const blueprintBtnAttrs = blockedByOpenItems
+        ? `disabled title="Resolve the blocking open-items below before Blueprint can run."`
+        : "";
+      return `
+        <div class="progress-cta done" role="region" aria-label="Validation complete">
+          <div class="progress-cta-body">
+            <div class="progress-cta-eyebrow">Validation → Blueprint</div>
+            <h2>Validation is complete ${badge}</h2>
+            ${validationNote ? `<p>${escapeHtml(validationNote)}</p>` : ""}
+            <p>The design has been audited against requirement coverage,
+            antipatterns, consistency, deferred findings, terminology
+            compliance, and schema sanity. Next step: <strong>Blueprint</strong> —
+            SABlueprintAgent assembles the architecture narrative, ops
+            runbook, diagrams, and 5 audience packs into a deliverable ZIP.</p>
+            ${blockerList}
+          </div>
+          <div class="progress-cta-actions progress-cta-actions-row">
+            <button id="start-blueprint-btn" class="cta-btn" ${blueprintBtnAttrs}>Start Blueprint →</button>
+            <a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View validation →</a>
+            ${blockedByOpenItems ? `<a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/open-items">View open items →</a>` : ""}
+          </div>
+        </div>`;
+    }
+
+    // Validation in progress.
+    if (validationInProgress) {
+      return `
+        <div class="progress-cta in-progress" role="region" aria-label="Validation in progress">
+          <div class="progress-cta-body">
+            <div class="progress-cta-eyebrow">Validation in progress</div>
+            <h2>Auditing the design</h2>
+            <p>SAValidationAgent is gating the design — tracing
+            requirements, scanning antipatterns, checking consistency,
+            schema sanity, and terminology.
+            ${validationNote ? `<em>${escapeHtml(validationNote)}</em> ` : ""}
+            Click <strong>Continue in chat →</strong> to follow along.</p>
+          </div>
+          <div class="progress-cta-actions progress-cta-actions-row">
+            <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
+          </div>
+        </div>`;
+    }
+
+    // Review DONE — Validation is next.
+    if (reviewDone) {
+      const badge = reviewStatus === "DONE_WITH_CONCERNS"
+        ? `<span class="status-badge advisory">Done with concerns</span>`
+        : `<span class="status-badge done">Done</span>`;
+      return `
+        <div class="progress-cta done" role="region" aria-label="Review complete">
+          <div class="progress-cta-body">
+            <div class="progress-cta-eyebrow">Review → Validation</div>
+            <h2>Review is complete ${badge}</h2>
+            ${reviewNote ? `<p>${escapeHtml(reviewNote)}</p>` : ""}
+            <p>The four reviewer agents (architect, developer, ops, security)
+            have audited the design. Findings appear in the chat as an
+            interactive card — click <strong>Apply / Defer / Discuss</strong>
+            per finding. Next step: <strong>Validation</strong> —
+            SAValidationAgent gates Blueprint by checking requirement
+            coverage, antipatterns, consistency, and schema sanity.</p>
+          </div>
+          <div class="progress-cta-actions progress-cta-actions-row">
+            <button id="start-validation-btn" class="cta-btn">Start Validation →</button>
+            <a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View reviews →</a>
+          </div>
+        </div>`;
+    }
+
+    // Review in progress — orchestrator is fanning out / aggregating.
+    if (reviewInProgress) {
+      return `
+        <div class="progress-cta in-progress" role="region" aria-label="Review in progress">
+          <div class="progress-cta-body">
+            <div class="progress-cta-eyebrow">Review in progress</div>
+            <h2>Reviewers are auditing the design</h2>
+            <p>SAOrchestratorAgent has dispatched the four reviewer agents
+            (architect, developer, ops, security) in parallel.
+            ${reviewNote ? `<em>${escapeHtml(reviewNote)}</em> ` : ""}
+            Each runs as a separate task; findings appear in chat once all
+            four return. Click <strong>Continue in chat →</strong> to follow
+            along.</p>
+          </div>
+          <div class="progress-cta-actions progress-cta-actions-row">
+            <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
+          </div>
+        </div>`;
+    }
+
+    // Design DONE — Review is the next step.
     if (designDone) {
       const badge = designStatus === "DONE_WITH_CONCERNS"
         ? `<span class="status-badge advisory">Done with concerns</span>`
@@ -986,14 +1261,15 @@
             <div class="progress-cta-eyebrow">Design → Review</div>
             <h2>Design is complete ${badge}</h2>
             ${designNote ? `<p>${escapeHtml(designNote)}</p>` : ""}
-            <p>Next step: <strong>Review</strong>. The reviewer agents
-            (architect, developer, ops, security) will audit your design
-            artifacts. Review agent isn't wired up yet — for now click
-            <strong>View design →</strong> to inspect the output on the
-            Artifacts tab.</p>
+            <p>Next step: <strong>Review</strong>. SAOrchestratorAgent fans
+            out to four reviewer agents (architect, developer, ops, security)
+            in parallel; each audits the design against a domain-specific
+            rubric and records findings. You'll get a per-finding
+            Apply / Defer / Discuss card in chat once they're done.</p>
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
-            <a class="cta-btn" href="/projects/${encodeURIComponent(eid)}/artifacts">View design →</a>
+            <button id="start-review-btn" class="cta-btn">Start Review →</button>
+            <a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View design →</a>
           </div>
           ${restartDesignRow}
         </div>`;
@@ -1119,10 +1395,20 @@
     const continueBtn = root.querySelector("#continue-in-chat-btn");
     const startDesignBtn = root.querySelector("#start-design-btn");
     const startDesignAutoBtn = root.querySelector("#start-design-auto-btn");
+    const startReviewBtn = root.querySelector("#start-review-btn");
+    const startValidationBtn = root.querySelector("#start-validation-btn");
+    const startBlueprintBtn = root.querySelector("#start-blueprint-btn");
+    const startProvisioningBtn = root.querySelector("#start-provisioning-btn");
+    const startProvisioningAutoBtn = root.querySelector("#start-provisioning-auto-btn");
     lockOnClick(startDiscoveryBtn, "Starting Discovery…");
     lockOnClick(continueBtn, "Opening chat…");
     lockOnClick(startDesignBtn, "Starting Design…");
     lockOnClick(startDesignAutoBtn, "Starting Auto…");
+    lockOnClick(startReviewBtn, "Starting Review…");
+    lockOnClick(startValidationBtn, "Starting Validation…");
+    lockOnClick(startBlueprintBtn, "Starting Blueprint…");
+    lockOnClick(startProvisioningBtn, "Starting Provisioning…");
+    lockOnClick(startProvisioningAutoBtn, "Starting Auto…");
 
     // Shared kickoff body for Design; the click handlers prefix
     // "Mode: <mode>" so the Domain agent's prompt branches accordingly.
@@ -1149,6 +1435,27 @@
       setAutoMode(eid, true);
       openChatWith(`Mode: auto\n\n${DESIGN_KICKOFF}`, "SADomainAgent");
     });
+    // Start Review — same kickoff body as the chat-pane phase-handoff card
+    // (PHASE_NEXT.design.kickoff). Routes to SAOrchestratorAgent which fans
+    // out to the 4 reviewer agents via peer_<AgentName>.
+    const REVIEW_KICKOFF = "Phase: review\n\nRun the Review phase. Fan out to peer_SAArchitectReviewerAgent, peer_SADeveloperReviewerAgent, peer_SAOpsReviewerAgent, peer_SASecurityReviewerAgent in this turn. After all four return, read_findings, write reviews/review-summary.md with severity counts + top concerns, then set_step_status(step=\"review\", status=...) per the rule (DONE if zero findings, DONE_WITH_CONCERNS if any finding recorded, BLOCKED if any reviewer returned BLOCKED).";
+    startReviewBtn?.addEventListener("click", () =>
+      openChatWith(REVIEW_KICKOFF, "SAOrchestratorAgent"));
+
+    // Single-agent phases (validation/blueprint/provisioning) — direct
+    // dispatch to the phase agent. Kickoff bodies match PHASE_NEXT entries
+    // so both entry points (Progress CTA + chat phase-handoff card) lead
+    // to the same conversation.
+    startValidationBtn?.addEventListener("click", () =>
+      openChatWith(PHASE_NEXT.review.kickoff, "SAValidationAgent"));
+    startBlueprintBtn?.addEventListener("click", () =>
+      openChatWith(PHASE_NEXT.validation.kickoff, "SABlueprintAgent"));
+    const PROVISIONING_KICKOFF_BODY = PHASE_NEXT.blueprint.kickoff;
+    startProvisioningBtn?.addEventListener("click", () =>
+      openChatWith(`Mode: interactive\n\n${PROVISIONING_KICKOFF_BODY}`, "SAProvisioningAgent"));
+    startProvisioningAutoBtn?.addEventListener("click", () =>
+      openChatWith(`Mode: auto\n\n${PROVISIONING_KICKOFF_BODY}`, "SAProvisioningAgent"));
+
     root.querySelector("#restart-discovery-btn")?.addEventListener("click", () =>
       openRestartDiscoveryModal(eid));
     root.querySelector("#restart-design-btn")?.addEventListener("click", () =>
@@ -1193,6 +1500,12 @@
       try {
         const res = await fetch(`/api/engagements/${encodeURIComponent(eid)}/discovery`, { method: "DELETE" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        // Backend cascade-wipes the full lifecycle from design through
+        // provisioning. Mirror that on the frontend so every downstream
+        // phase-handoff card can re-fire cleanly on the next run.
+        ["discovery", "design", "review", "validation", "blueprint", "provisioning"]
+          .forEach(step => _clearPhaseHint(eid, step));
+        setAutoMode(eid, false);
         closeModal();
         // Refresh the view so the CTA flips back to "Start Discovery".
         render();
@@ -1249,12 +1562,11 @@
       try {
         const res = await fetch(`/api/engagements/${encodeURIComponent(eid)}/design`, { method: "DELETE" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        // The backend cascade-wipes Review state (findings + reviews/*.md
-        // + review step status). Mirror that on the frontend by clearing
-        // the persisted phase-handoff hint and any Auto-mode flag so a
-        // re-run can re-fire the design handoff + findings cards cleanly.
-        _clearPhaseHint(eid, "design");
-        _clearPhaseHint(eid, "review");
+        // The backend cascade-wipes EVERY downstream phase (review,
+        // validation, blueprint, provisioning). Mirror that on the
+        // frontend so a re-run can re-fire every handoff card cleanly.
+        ["design", "review", "validation", "blueprint", "provisioning"]
+          .forEach(step => _clearPhaseHint(eid, step));
         setAutoMode(eid, false);
         closeModal();
         render();
@@ -2327,7 +2639,29 @@
       // this phase — render a single CTA.
       singleAction: true,
     },
-    // validation/blueprint/provisioning — add as those agents land.
+    review: {
+      nextLabel: "Validation",
+      ctaLabel: "Start Validation →",
+      agent: "SAValidationAgent",
+      kickoff: "Phase: validation\n\nRun the Validation phase. Apply your 6-criterion rubric (requirement coverage, antipattern scan, consistency, deferred findings, terminology compliance, schema sanity). Record blocking open-items with affecting_step=\"blueprint\" so the lifecycle gates correctly. Write validation/validation-report.md and the machine YAML. Call set_step_status(step=\"validation\", ...) per the rule.",
+      singleAction: true,
+    },
+    validation: {
+      nextLabel: "Blueprint",
+      ctaLabel: "Start Blueprint →",
+      agent: "SABlueprintAgent",
+      kickoff: "Phase: blueprint\n\nAssemble the final blueprint package. Read all design/review/validation artifacts. Compose blueprint/architecture.md + blueprint/runbook.md, write available Mermaid diagrams, render 5 audience packs (blueprint/executive/admin-ops/security/developers, both md+pdf), then assemble_zip to produce exports/engagement-package.zip. Call set_step_status(step=\"blueprint\", ...) per the rule.",
+      singleAction: true,
+    },
+    blueprint: {
+      nextLabel: "Provisioning",
+      ctaLabel: "Start Provisioning →",
+      agent: "SAProvisioningAgent",
+      kickoff: "Phase: provisioning\n\nProvision the Event Portal model. Pre-flight (opt-in check + verify_tenant_access + validation gate), then dry-run plan, then per-layer creation [domains → schemas → events → applications] with reuse-by-content-match. Export AsyncAPI per provisioned application. Call set_step_status(step=\"provisioning\", ...) per the rule.",
+      // Provisioning supports Mode: auto / Mode: interactive — render
+      // both buttons so the user can choose per-layer confirmation vs
+      // hands-off execution.
+    },
   };
 
   // localStorage dedup so the in-chat handoff card fires only once per

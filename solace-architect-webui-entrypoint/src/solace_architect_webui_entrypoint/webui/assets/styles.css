@@ -938,6 +938,28 @@ pre {
 }
 .finding-actions .cta-btn { padding: 4px 10px; font-size: 12px; }
 
+/* Blueprint-blocked banner inside the Validation-DONE CTA. */
+.progress-blocker-list {
+  margin-top: 10px;
+  border-left: 3px solid #d9534f;
+  padding-left: 10px;
+  font-size: 12px;
+  background: rgba(217,83,79,0.04);
+  border-radius: 0 4px 4px 0;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  padding-right: 8px;
+}
+.progress-blocker-list ul {
+  margin: 4px 0 4px 16px;
+  line-height: 1.5;
+}
+.progress-blocker-list code {
+  background: var(--bg, #fafafa);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+
 .cta-btn-secondary {
   background: var(--bg); color: var(--primary); border: 1px solid var(--border);
 }

@@ -168,3 +168,102 @@ async def test_reset_design_cascades_to_review_state():
     assert result["findings_cleared"] == 1
     assert result["review_step_cleared"] is True
     assert any("reviews/" in a for a in result["removed_artifacts"]), result
+
+
+@pytest.mark.asyncio
+async def test_reset_design_cascades_to_all_downstream_phases():
+    """Restart Design must wipe Validation + Blueprint + Provisioning state too,
+    not just Review. Without this cascade, the user could re-run Design and find
+    stale blueprint packages / provisioning records pointing at deleted scope
+    artifacts. The cascade order is review → validation → blueprint → provisioning.
+    """
+    from solace_architect_core.tools import (
+        artifact_tools, decision_tools, lifecycle_tools,
+    )
+    from solace_architect_webui_entrypoint.routes.api import reset_design
+
+    eid = "cascade-full-eng"
+
+    # Seed design + every downstream phase.
+    await artifact_tools.write_artifact(eid, "topic-design/topic-taxonomy.yaml", "topics: []")
+    await artifact_tools.write_artifact(eid, "reviews/architect-review.md", "# Review")
+    await artifact_tools.write_artifact(eid, "validation/validation-report.md", "# Validation")
+    await artifact_tools.write_artifact(eid, "blueprint/architecture.md", "# Architecture")
+    await artifact_tools.write_artifact(eid, "exports/engagement-package.zip", "(zip)")
+    await artifact_tools.write_artifact(eid, "provisioning/provisioned.yaml", "domains: []")
+    for step in ("design", "review", "validation", "blueprint", "provisioning"):
+        await lifecycle_tools.set_step_status(
+            eid, step=step, status="DONE", agent=f"SA{step.capitalize()}Agent",
+        )
+    # Seed open-items from each cascading source.
+    for source in ("domain", "review-deferred", "validation", "provisioning"):
+        await decision_tools.record_open_item(
+            eid, severity="advisory", source=source,
+            description=f"seeded {source} item",
+        )
+
+    result = await reset_design(eid)
+
+    # Every downstream phase's artifacts gone.
+    remaining = (await artifact_tools.list_artifacts(eid)).data or []
+    assert not any(a.startswith(("topic-design/", "reviews/", "validation/",
+                                  "blueprint/", "exports/", "provisioning/"))
+                    for a in remaining), remaining
+
+    # Every downstream phase's step status cleared.
+    status_after = (await lifecycle_tools.get_engagement_status(eid)).data
+    for step in ("design", "review", "validation", "blueprint", "provisioning"):
+        assert step not in status_after["steps"], f"{step} not cleared: {status_after['steps']}"
+
+    # Every source's open-items superseded.
+    for source in ("domain", "review-deferred", "validation", "provisioning"):
+        items = (await decision_tools.read_open_items(eid, source=source)).data
+        assert all(i["status"] == "superseded" for i in items), (source, items)
+
+    # Response payload reports the full cascade.
+    assert "validation" in result["cascaded_steps"]
+    assert "blueprint" in result["cascaded_steps"]
+    assert "provisioning" in result["cascaded_steps"]
+
+
+@pytest.mark.asyncio
+async def test_reset_discovery_cascades_through_full_lifecycle():
+    """Restart Discovery wipes EVERY downstream phase since they all derive
+    from the brief. Verifies the same cascade helper runs end-to-end.
+    """
+    from solace_architect_core.tools import (
+        artifact_tools, decision_tools, lifecycle_tools,
+    )
+    from solace_architect_webui_entrypoint.routes.api import reset_discovery
+
+    eid = "cascade-from-discovery-eng"
+
+    # Seed every phase including discovery itself.
+    await artifact_tools.write_artifact(eid, "discovery/discovery-brief.yaml", "topics: []")
+    await artifact_tools.write_artifact(eid, "topic-design/topic-taxonomy.yaml", "topics: []")
+    await artifact_tools.write_artifact(eid, "reviews/architect-review.md", "# R")
+    await artifact_tools.write_artifact(eid, "validation/validation-report.md", "# V")
+    await artifact_tools.write_artifact(eid, "blueprint/architecture.md", "# B")
+    for step in ("discovery", "design", "review", "validation", "blueprint"):
+        await lifecycle_tools.set_step_status(
+            eid, step=step, status="DONE", agent=f"SA{step.capitalize()}Agent",
+        )
+
+    result = await reset_discovery(eid)
+
+    # Every downstream phase artifact gone (discovery folder may have other
+    # files like intake.json which reset_discovery doesn't touch on purpose,
+    # so we only assert the design+ phases are wiped).
+    remaining = (await artifact_tools.list_artifacts(eid)).data or []
+    assert not any(a.startswith(("topic-design/", "reviews/", "validation/", "blueprint/"))
+                    for a in remaining), remaining
+
+    # Step statuses for design+ are gone.
+    status_after = (await lifecycle_tools.get_engagement_status(eid)).data
+    for step in ("design", "review", "validation", "blueprint", "discovery"):
+        assert step not in status_after["steps"], f"{step} not cleared: {status_after['steps']}"
+
+    # Cascade scope covers design through provisioning.
+    assert set(result["cascaded_steps"]) == {
+        "design", "review", "validation", "blueprint", "provisioning",
+    }

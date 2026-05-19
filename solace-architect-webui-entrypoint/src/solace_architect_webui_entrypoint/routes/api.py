@@ -201,9 +201,18 @@ async def reset_discovery(engagement_id: str) -> Any:
                 )
                 superseded += 1
 
+    # Cascade-wipe every downstream phase (design through provisioning) — they
+    # all derive from Discovery, so re-running with stale design/review/etc
+    # would leave the engagement in a contradictory state.
+    cascade = await _reset_downstream(engagement_id, after_step="discovery")
+    removed.extend(cascade.get("cascaded_artifacts", []))
+    superseded += cascade.get("cascaded_open_items_superseded", 0)
+
     return {
         "removed_artifacts": removed,
         "open_items_superseded": superseded,
+        "findings_cleared": cascade.get("cascaded_findings_cleared", 0),
+        "cascaded_steps": cascade.get("cascaded_steps", []),
         **telemetry_cleared,
     }
 
@@ -257,20 +266,13 @@ async def reset_design(engagement_id: str) -> Any:
         except Exception:
             pass
 
-    # Cascade: wipe Review state, since findings + narratives reference
-    # the design artifacts we just deleted.
-    review_cleared = await _reset_review_state(engagement_id)
-    removed.extend(review_cleared["removed_review_artifacts"])
-
-    # Clear status entries (design + review)
+    # Clear the design step status + telemetry. (Domain-sourced open-items
+    # are superseded inside _reset_downstream's cascade below — keeping the
+    # logic in one place.)
     await lifecycle_tools.clear_step_status(engagement_id, "design")
-    await lifecycle_tools.clear_step_status(engagement_id, "review")
-
-    # Drop the metrics tied to BOTH steps — timing_data + per-step telemetry rows.
     telemetry_cleared = await _clear_step_telemetry(engagement_id, "design")
-    review_telemetry_cleared = await _clear_step_telemetry(engagement_id, "review")
 
-    # Supersede domain-sourced AND review-deferred open-items.
+    # Supersede domain-sourced open-items.
     items_res = await decision_tools.read_open_items(engagement_id, source="domain")
     superseded = 0
     if items_res.ok and items_res.data:
@@ -281,23 +283,23 @@ async def reset_design(engagement_id: str) -> Any:
                     resolution_note="Superseded by Design restart",
                 )
                 superseded += 1
-    review_items_res = await decision_tools.read_open_items(engagement_id, source="review-deferred")
-    if review_items_res.ok and review_items_res.data:
-        for item in review_items_res.data:
-            if item.get("status") == "open":
-                await decision_tools.update_open_item_status(
-                    engagement_id, item_id=item["id"], new_status="superseded",
-                    resolution_note="Superseded by Design restart (Review state cascaded)",
-                )
-                superseded += 1
+
+    # Cascade-wipe every phase downstream of design — review, validation,
+    # blueprint, provisioning — since they all derive from the design
+    # artifacts we just deleted. Without this, a re-run of Design would
+    # leave the engagement with stale findings, validation reports, and
+    # blueprint packages pointing at deleted artifacts.
+    cascade = await _reset_downstream(engagement_id, after_step="design")
+    removed.extend(cascade.get("cascaded_artifacts", []))
+    superseded += cascade.get("cascaded_open_items_superseded", 0)
 
     return {
         "removed_artifacts": removed,
         "open_items_superseded": superseded,
-        "findings_cleared": review_cleared["findings_cleared"],
+        "findings_cleared": cascade.get("cascaded_findings_cleared", 0),
         "review_step_cleared": True,
+        "cascaded_steps": cascade.get("cascaded_steps", []),
         **telemetry_cleared,
-        **{f"review_{k}": v for k, v in review_telemetry_cleared.items()},
     }
 
 
@@ -335,6 +337,122 @@ async def _reset_review_state(engagement_id: str) -> dict:
     return {
         "findings_cleared": findings_cleared,
         "removed_review_artifacts": removed,
+    }
+
+
+async def _unlink_category(engagement_id: str, category: str) -> list:
+    """Unlink every artifact under one folder. Returns names removed."""
+    removed = []
+    try:
+        res = await artifact_tools.list_artifacts(engagement_id, category=category)
+        if res.ok and res.data:
+            for name in res.data:
+                try:
+                    path = safe_artifact_path(engagement_id, name)
+                    if path.exists():
+                        path.unlink()
+                        removed.append(name)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return removed
+
+
+async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
+    """Cascade-wipe every lifecycle phase strictly AFTER ``after_step``.
+
+    Used by reset_discovery (after_step="discovery" → wipe design through
+    provisioning) and reset_design (after_step="design" → wipe review
+    through provisioning). Keeps lifecycle re-runs from acting on stale
+    downstream state.
+
+    Cascade order matches the lifecycle:
+      discovery → design → review → validation → blueprint → provisioning
+
+    Each step's wipe removes its artifacts, clears its step status, drops
+    its telemetry, and supersedes its source-attributed open-items.
+    """
+    order = ("discovery", "design", "review", "validation", "blueprint", "provisioning")
+    if after_step not in order:
+        return {}
+    start_idx = order.index(after_step) + 1
+    to_wipe = order[start_idx:]
+
+    removed = []
+    findings_cleared = 0
+    superseded = 0
+
+    if "design" in to_wipe:
+        for scope in _DESIGN_SCOPE_FOLDERS:
+            removed.extend(await _unlink_category(engagement_id, scope))
+        items_res = await decision_tools.read_open_items(engagement_id, source="domain")
+        if items_res.ok and items_res.data:
+            for item in items_res.data:
+                if item.get("status") == "open":
+                    await decision_tools.update_open_item_status(
+                        engagement_id, item_id=item["id"], new_status="superseded",
+                        resolution_note=f"Superseded by {after_step.capitalize()} restart (cascade)",
+                    )
+                    superseded += 1
+        await lifecycle_tools.clear_step_status(engagement_id, "design")
+        await _clear_step_telemetry(engagement_id, "design")
+
+    if "review" in to_wipe:
+        review_cleared = await _reset_review_state(engagement_id)
+        removed.extend(review_cleared["removed_review_artifacts"])
+        findings_cleared += review_cleared["findings_cleared"]
+        items_res = await decision_tools.read_open_items(engagement_id, source="review-deferred")
+        if items_res.ok and items_res.data:
+            for item in items_res.data:
+                if item.get("status") == "open":
+                    await decision_tools.update_open_item_status(
+                        engagement_id, item_id=item["id"], new_status="superseded",
+                        resolution_note=f"Superseded by {after_step.capitalize()} restart (cascade)",
+                    )
+                    superseded += 1
+        await lifecycle_tools.clear_step_status(engagement_id, "review")
+        await _clear_step_telemetry(engagement_id, "review")
+
+    if "validation" in to_wipe:
+        removed.extend(await _unlink_category(engagement_id, "validation"))
+        items_res = await decision_tools.read_open_items(engagement_id, source="validation")
+        if items_res.ok and items_res.data:
+            for item in items_res.data:
+                if item.get("status") == "open":
+                    await decision_tools.update_open_item_status(
+                        engagement_id, item_id=item["id"], new_status="superseded",
+                        resolution_note=f"Superseded by {after_step.capitalize()} restart (cascade)",
+                    )
+                    superseded += 1
+        await lifecycle_tools.clear_step_status(engagement_id, "validation")
+        await _clear_step_telemetry(engagement_id, "validation")
+
+    if "blueprint" in to_wipe:
+        removed.extend(await _unlink_category(engagement_id, "blueprint"))
+        removed.extend(await _unlink_category(engagement_id, "exports"))
+        await lifecycle_tools.clear_step_status(engagement_id, "blueprint")
+        await _clear_step_telemetry(engagement_id, "blueprint")
+
+    if "provisioning" in to_wipe:
+        removed.extend(await _unlink_category(engagement_id, "provisioning"))
+        items_res = await decision_tools.read_open_items(engagement_id, source="provisioning")
+        if items_res.ok and items_res.data:
+            for item in items_res.data:
+                if item.get("status") == "open":
+                    await decision_tools.update_open_item_status(
+                        engagement_id, item_id=item["id"], new_status="superseded",
+                        resolution_note=f"Superseded by {after_step.capitalize()} restart (cascade)",
+                    )
+                    superseded += 1
+        await lifecycle_tools.clear_step_status(engagement_id, "provisioning")
+        await _clear_step_telemetry(engagement_id, "provisioning")
+
+    return {
+        "cascaded_steps": list(to_wipe),
+        "cascaded_artifacts": removed,
+        "cascaded_findings_cleared": findings_cleared,
+        "cascaded_open_items_superseded": superseded,
     }
 
 
