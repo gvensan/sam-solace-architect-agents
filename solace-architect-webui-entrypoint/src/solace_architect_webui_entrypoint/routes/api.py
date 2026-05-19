@@ -600,8 +600,13 @@ async def exports_availability(engagement_id: str) -> Any:
     return r.data
 
 
-async def exports_render(engagement_id: str, audience: str, format: str = "html") -> Any:
-    r = await blueprint_tools.render_audience_pack(engagement_id, audience, format)
+async def exports_render(engagement_id: str, audience: str, format: str = "html",
+                          force: bool = False) -> Any:
+    # ``force`` bypasses render_audience_pack's freshness cache — surfaced
+    # in the UI as a per-card "Regenerate" checkbox.
+    r = await blueprint_tools.render_audience_pack(
+        engagement_id, audience, format, force=bool(force),
+    )
     if not r.ok:
         # Surface the underlying error to the frontend instead of returning
         # null .data — the WebUI's __renderPack click handler crashes when

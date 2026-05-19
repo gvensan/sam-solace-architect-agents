@@ -26,6 +26,12 @@ dependencies = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/solace_architect_blueprint"]
 src-path = "src"
+# Include non-Python assets — the audience-pack renderer reads
+# report_generator/templates/report.css and report.js at runtime via
+# importlib.resources, so they must ship in the wheel alongside the .py files.
+artifacts = [
+  "src/solace_architect_blueprint/report_generator/templates/*",
+]
 
 # SAM plugin layout — non-source files placed alongside the Python package in the wheel.
 # (The package itself is handled by [tool.hatch.build.targets.wheel].packages above,

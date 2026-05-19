@@ -864,7 +864,14 @@
         const badge = ready
           ? `<span class="status-badge done">Ready</span>`
           : `<span class="status-badge pending">Awaiting ${escapeHtml(p.prereq)}</span>`;
-        return `<div class="export-card${ready ? "" : " export-card-disabled"}">
+        // The rendered HTML page itself carries Print/PDF + Download HTML
+        // buttons in its top toolbar, so the Export page only needs the
+        // primary "View HTML" entry point. Keeps the card compact and
+        // removes a redundant action. A small "Regenerate from scratch"
+        // checkbox lets the user bypass the freshness cache when they
+        // suspect the report is stale (or just want to force a refresh).
+        const forceId = `force-${p.id}-${eid}`;
+        return `<div class="export-card${ready ? "" : " export-card-disabled"}" data-pack="${p.id}">
           <div class="export-card-head">
             <div class="export-card-icon" aria-hidden="true">${p.icon}</div>
             <div class="export-card-title">${escapeHtml(p.title)}</div>
@@ -873,13 +880,13 @@
           <p class="export-card-desc">${escapeHtml(p.desc)}</p>
           <div class="export-card-actions">
             <button class="cta-btn export-card-cta"${ready ? "" : " disabled"}
-                    ${ready ? `onclick="window.__renderPack('${eid}','${p.id}')"` : ""}>
+                    ${ready ? `onclick="window.__renderPack(this, '${eid}','${p.id}')"` : ""}>
               ${ready ? "View HTML →" : "Locked"}
             </button>
-            <button class="cta-btn cta-btn-secondary export-card-cta"${ready ? "" : " disabled"}
-                    ${ready ? `onclick="window.__downloadPack('${eid}','${p.id}','pdf')"` : ""}>
-              ${ready ? "Download PDF ↓" : ""}
-            </button>
+            ${ready ? `<label class="export-card-force" for="${forceId}" title="Skip the freshness cache and re-render this pack from scratch. Use when the report looks stale.">
+              <input type="checkbox" id="${forceId}" class="export-card-force-cb" data-pack="${p.id}">
+              <span>Regenerate</span>
+            </label>` : ""}
           </div>
         </div>`;
       }).join("");
@@ -1810,7 +1817,7 @@
           <div class="settings-flag-row"><span class="flag-name">Username</span><span class="flag-value">${escapeHtml(me.username || me.name)}</span></div>
           <div class="settings-flag-row"><span class="flag-name">Email</span><span class="flag-value">${escapeHtml(me.email || "—")}</span></div>
           <div class="settings-flag-row"><span class="flag-name">Role</span><span class="flag-value">${me.is_admin ? "admin" : "user"}</span></div>
-          <p style="margin-top:14px"><button id="open-pw-change" class="modal-btn modal-btn-primary">Change password…</button></p>
+          <p style="margin-top:14px"><button id="open-pw-change" class="cta-btn">Change password…</button></p>
         ` : `<p class="muted">Not signed in.</p>`}
       </section>
 
@@ -4196,29 +4203,67 @@
   // Action handlers (inline onclick)
   // ============================================================================
   window.__resolveItem = (eid, itemId, desc) => openResolveItemModal(eid, itemId, desc || "");
-  window.__renderPack = async (eid, audience) => {
+  // Render-pack handler. The first arg is the clicked button element so we
+  // can show a loading state on the card while the server renders — large
+  // engagements with many Mermaid diagrams take 5-30s on first render
+  // (server-side mmdc pre-rendering is the slow part). Subsequent renders
+  // hit the freshness cache and return in <200ms.
+  window.__renderPack = async (btn, eid, audience) => {
     let r, d;
+    const card = btn?.closest(".export-card");
+    const originalLabel = btn?.textContent;
+    // Loading state — disable + show spinner. The card grows a "loading
+    // bar" too so the visual feedback is obvious even outside the button.
+    if (btn) {
+      btn.disabled = true;
+      btn.classList.add("is-loading");
+      btn.innerHTML = `<span class="cta-spinner"></span><span>Rendering…</span>`;
+    }
+    if (card) card.classList.add("export-card-loading");
+    // Read the per-card "Regenerate" checkbox — when checked, bypass the
+    // freshness cache and force a full re-render. Unchecked (the default)
+    // lets the backend short-circuit if nothing has changed since the
+    // previous render.
+    const forceCb = card?.querySelector(".export-card-force-cb");
+    const force = !!forceCb?.checked;
     try {
       r = await fetch(`/api/engagements/${encodeURIComponent(eid)}/exports/render`, {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ audience, format: "html" }),
+        body: JSON.stringify({ audience, format: "both", force }),
       });
       d = await r.json();
     } catch (e) {
       alert(`Render failed: ${e.message}`);
+      _resetExportCard(btn, card, originalLabel);
       return;
     }
-    // Prefer the browser-fetchable URL (served by /exports/raw/<file>) over
-    // the raw filesystem path. Filesystem paths are 404 in the browser.
-    const url = d?.urls?.[0] || null;
+    // After a forced regen completes, uncheck the box so the next click
+    // uses the cache again — leaving it ticked would burn time on every
+    // subsequent open.
+    if (force && forceCb) forceCb.checked = false;
+    const url = d?.urls?.find(u => u.toLowerCase().endsWith(".html")) || d?.urls?.[0] || null;
     if (!url) {
       const detail = d?.error || "no renderer registered or audience pack not available yet";
       alert(`Couldn't render '${audience}' pack: ${detail}\n\n` +
             `If SAM was just upgraded, restart SAM so the renderer registers at boot.`);
+      _resetExportCard(btn, card, originalLabel);
       return;
     }
+    // If the server says the report was a cache hit, the user gets a quick
+    // open. Otherwise open the freshly-rendered HTML. Either way, restore
+    // the button state for the next click (a fresh render or different pack).
+    _resetExportCard(btn, card, originalLabel);
     window.open(url, "_blank");
   };
+
+  function _resetExportCard(btn, card, originalLabel) {
+    if (btn) {
+      btn.disabled = false;
+      btn.classList.remove("is-loading");
+      btn.textContent = originalLabel || "View HTML →";
+    }
+    if (card) card.classList.remove("export-card-loading");
+  }
   // Download a specific audience pack in the requested format ("html" or "pdf").
   // Renders the file first (so it exists on disk), then opens the
   // /exports/raw/<filename> URL — PDFs trigger the browser's native download.

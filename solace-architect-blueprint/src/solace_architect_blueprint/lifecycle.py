@@ -16,7 +16,7 @@ import logging
 log = logging.getLogger(__name__)
 
 
-async def init(*args, **kwargs):
+def init(*args, **kwargs):
     """Plugin init hook — runs once when SAM starts the agent.
 
     Two responsibilities beyond importing the package:
@@ -40,7 +40,7 @@ async def init(*args, **kwargs):
     return None
 
 
-async def cleanup(*args, **kwargs):
+def cleanup(*args, **kwargs):
     """Plugin cleanup hook — runs once on agent shutdown."""
     log.info("SABlueprintAgent lifecycle.cleanup()")
     return None

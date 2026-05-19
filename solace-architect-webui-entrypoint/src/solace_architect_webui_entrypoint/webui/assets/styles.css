@@ -1511,7 +1511,47 @@ pre {
 }
 .export-card-cta { align-self: flex-start; font-size: 12px; padding: 6px 12px; }
 .export-card-cta:disabled { opacity: 0.55; cursor: not-allowed; }
-.export-card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.export-card-cta.is-loading {
+  display: inline-flex; align-items: center; gap: 6px;
+  opacity: 0.85; cursor: progress;
+}
+.export-card-actions {
+  display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
+}
+.export-card-force {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; color: var(--muted, #888);
+  font-family: 'Space Mono', monospace; letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer; user-select: none;
+}
+.export-card-force input[type="checkbox"] {
+  width: 13px; height: 13px; cursor: pointer; accent-color: var(--accent, #00C895);
+  margin: 0;
+}
+.export-card-force:hover { color: var(--primary, #093B5F); }
+
+/* Spinner used in any "loading" CTA — small, accent-colored. */
+.cta-spinner {
+  width: 12px; height: 12px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: cta-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes cta-spin { to { transform: rotate(360deg); } }
+
+/* Subtle pulse on the whole card while a pack is rendering. */
+.export-card-loading {
+  background: linear-gradient(120deg, var(--surface, #fff) 0%, rgba(0,200,149,0.04) 50%, var(--surface, #fff) 100%);
+  background-size: 200% 100%;
+  animation: export-card-shimmer 1.6s ease-in-out infinite;
+}
+@keyframes export-card-shimmer {
+  0%   { background-position: 100% 0; }
+  100% { background-position: -100% 0; }
+}
 .export-archive {
   display: flex; gap: 16px; padding: 18px 20px; margin: 12px 0 24px;
   border: 1px solid var(--border); border-radius: 10px;
