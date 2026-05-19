@@ -103,3 +103,68 @@ async def test_intake_submit_creates_project_and_writes_brief():
     # And the lossless JSON snapshot
     intake_json = read_text(r["engagement_id"], "discovery/intake.json")
     assert "Pilot E2E" in intake_json
+
+
+@pytest.mark.asyncio
+async def test_reset_design_cascades_to_review_state():
+    """Restart Design must wipe Review state — findings, reviews/*.md, review
+    step status, and review-deferred open-items. Without this cascade, a
+    re-run of Design would leave stale findings pointing at deleted
+    artifacts. Lock this behavior in with a focused test.
+    """
+    from solace_architect_core.tools import (
+        artifact_tools, decision_tools, lifecycle_tools,
+    )
+    from solace_architect_webui_entrypoint.routes.api import reset_design
+
+    eid = "cascade-eng"
+
+    # Seed design + review state.
+    await artifact_tools.write_artifact(
+        eid, "topic-design/topic-taxonomy.yaml", "topics: []",
+    )
+    await artifact_tools.write_artifact(
+        eid, "reviews/architect-review.md", "# Architecture Review\n",
+    )
+    await artifact_tools.write_artifact(
+        eid, "reviews/review-summary.md", "# Review Summary\n",
+    )
+    await decision_tools.record_finding(
+        eid, severity="critical", description="seed",
+        affected_artifact="topic-design/topic-taxonomy.yaml",
+        recommendation="fix it", source_agent="SAArchitectReviewerAgent",
+    )
+    await lifecycle_tools.set_step_status(
+        eid, step="design", status="DONE", agent="SADomainAgent",
+    )
+    await lifecycle_tools.set_step_status(
+        eid, step="review", status="DONE_WITH_CONCERNS",
+        agent="SAOrchestratorAgent",
+    )
+    # Add a review-deferred open-item (the side-effect of deferring a finding).
+    await decision_tools.record_open_item(
+        eid, severity="advisory", source="review-deferred",
+        description="deferred F1",
+    )
+
+    # Trigger reset_design.
+    result = await reset_design(eid)
+
+    # Findings emptied.
+    findings_after = (await decision_tools.read_findings(eid)).data
+    assert findings_after == [], f"expected no findings after cascade, got {findings_after}"
+    # reviews/*.md unlinked.
+    review_artifacts_after = (await artifact_tools.list_artifacts(eid, category="reviews")).data
+    assert not review_artifacts_after, f"expected no reviews/* artifacts, got {review_artifacts_after}"
+    # review step status cleared.
+    status_after = (await lifecycle_tools.get_engagement_status(eid)).data
+    assert "review" not in status_after["steps"], status_after["steps"]
+    # Design step also cleared (existing behavior preserved).
+    assert "design" not in status_after["steps"], status_after["steps"]
+    # review-deferred open-item superseded.
+    items = (await decision_tools.read_open_items(eid, source="review-deferred")).data
+    assert all(i["status"] == "superseded" for i in items), items
+    # Response payload exposes the counts.
+    assert result["findings_cleared"] == 1
+    assert result["review_step_cleared"] is True
+    assert any("reviews/" in a for a in result["removed_artifacts"]), result

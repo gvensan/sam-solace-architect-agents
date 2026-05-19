@@ -216,14 +216,23 @@ _DESIGN_SCOPE_FOLDERS = (
 
 
 async def reset_design(engagement_id: str) -> Any:
-    """Hard-reset the design step.
+    """Hard-reset the design step AND any review state derived from it.
 
     Removes every artifact under the nine SADomainAgent scope folders
-    (topic-design/, broker-select/, ..., migration/) and clears the
-    design entry in meta/engagement-status.yaml.
+    (topic-design/, broker-select/, ..., migration/), clears the design
+    entry in meta/engagement-status.yaml, and ALSO cascades the wipe to
+    Review state — because Review's findings, narratives, and step
+    status are all derived from the design artifacts. Without this
+    cascade, Restart Design would leave the user with stale findings
+    pointing at deleted artifacts.
 
-    Open-items with source='domain' are marked as superseded (mirrors
-    reset_discovery's pattern).
+    Cascade includes:
+      - findings.yaml: emptied (findings reference deleted artifacts).
+      - reviews/*.md: per-reviewer narratives + review-summary.md unlinked.
+      - review step status: cleared.
+      - review-deferred open-items: superseded.
+
+    Open-items with source='domain' are marked as superseded.
 
     Decisions in meta/decisions.yaml are intentionally NOT touched —
     they're an immutable audit trail; a fresh design pass should be
@@ -248,13 +257,20 @@ async def reset_design(engagement_id: str) -> Any:
         except Exception:
             pass
 
-    # Clear status entry
+    # Cascade: wipe Review state, since findings + narratives reference
+    # the design artifacts we just deleted.
+    review_cleared = await _reset_review_state(engagement_id)
+    removed.extend(review_cleared["removed_review_artifacts"])
+
+    # Clear status entries (design + review)
     await lifecycle_tools.clear_step_status(engagement_id, "design")
+    await lifecycle_tools.clear_step_status(engagement_id, "review")
 
-    # Drop the metrics tied to this step — timing_data + per-step telemetry rows.
+    # Drop the metrics tied to BOTH steps — timing_data + per-step telemetry rows.
     telemetry_cleared = await _clear_step_telemetry(engagement_id, "design")
+    review_telemetry_cleared = await _clear_step_telemetry(engagement_id, "review")
 
-    # Supersede domain-sourced open-items
+    # Supersede domain-sourced AND review-deferred open-items.
     items_res = await decision_tools.read_open_items(engagement_id, source="domain")
     superseded = 0
     if items_res.ok and items_res.data:
@@ -265,11 +281,60 @@ async def reset_design(engagement_id: str) -> Any:
                     resolution_note="Superseded by Design restart",
                 )
                 superseded += 1
+    review_items_res = await decision_tools.read_open_items(engagement_id, source="review-deferred")
+    if review_items_res.ok and review_items_res.data:
+        for item in review_items_res.data:
+            if item.get("status") == "open":
+                await decision_tools.update_open_item_status(
+                    engagement_id, item_id=item["id"], new_status="superseded",
+                    resolution_note="Superseded by Design restart (Review state cascaded)",
+                )
+                superseded += 1
 
     return {
         "removed_artifacts": removed,
         "open_items_superseded": superseded,
+        "findings_cleared": review_cleared["findings_cleared"],
+        "review_step_cleared": True,
         **telemetry_cleared,
+        **{f"review_{k}": v for k, v in review_telemetry_cleared.items()},
+    }
+
+
+async def _reset_review_state(engagement_id: str) -> dict:
+    """Clear findings + reviews/*.md artifacts. Returns counts for the response.
+
+    Called by reset_design (cascade) and reset_review (direct). Keeps the
+    wipe atomic and consistent across both entry points.
+    """
+    # Empty findings.yaml in place (preserves user-namespacing).
+    findings_cleared = 0
+    try:
+        existing = read_yaml(engagement_id, "meta/findings.yaml", default={"findings": []})
+        findings_cleared = len((existing or {}).get("findings", []) or [])
+        write_yaml(engagement_id, "meta/findings.yaml", {"findings": []})
+    except Exception:
+        pass
+
+    # Unlink reviews/*.md narrative artifacts.
+    removed = []
+    try:
+        res = await artifact_tools.list_artifacts(engagement_id, category="reviews")
+        if res.ok and res.data:
+            for name in res.data:
+                try:
+                    path = safe_artifact_path(engagement_id, name)
+                    if path.exists():
+                        path.unlink()
+                        removed.append(name)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    return {
+        "findings_cleared": findings_cleared,
+        "removed_review_artifacts": removed,
     }
 
 

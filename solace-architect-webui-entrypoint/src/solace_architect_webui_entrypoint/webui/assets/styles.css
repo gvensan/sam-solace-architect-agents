@@ -877,6 +877,67 @@ pre {
 }
 .auto-advance-actions .cta-btn { padding: 4px 10px; font-size: 12px; }
 
+/* Findings card — rendered after Review completes. */
+.findings-card {
+  background: var(--surface, #fff);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  margin: 6px 0;
+  font-size: 13px;
+}
+.findings-card.findings-empty { border-color: var(--accent, #00C895); }
+.findings-header {
+  display: flex; align-items: center; gap: 10px; font-weight: 600;
+  margin-bottom: 6px;
+}
+.findings-icon { font-size: 16px; }
+.findings-title { color: var(--primary); }
+.findings-counts {
+  margin-left: auto;
+  font-family: 'Space Mono', monospace; font-size: 11px;
+  color: var(--muted, #666);
+  letter-spacing: 0.02em;
+}
+.findings-list { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+
+.finding-row {
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: 4px;
+  padding: 8px 12px;
+  background: var(--bg, #fafafa);
+}
+.finding-row.severity-critical  { border-left-color: #d9534f; }
+.finding-row.severity-important { border-left-color: #f0ad4e; }
+.finding-row.severity-advisory  { border-left-color: #5bc0de; }
+.finding-row-pending { opacity: 0.55; }
+
+.finding-header {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 11px; font-family: 'Space Mono', monospace;
+  margin-bottom: 4px;
+}
+.finding-badge {
+  padding: 1px 6px; border-radius: 3px;
+  background: var(--border); color: var(--primary);
+  letter-spacing: 0.04em;
+}
+.finding-badge.severity-critical  { background: #d9534f; color: #fff; }
+.finding-badge.severity-important { background: #f0ad4e; color: #fff; }
+.finding-badge.severity-advisory  { background: #5bc0de; color: #fff; }
+.finding-id { color: var(--muted, #888); }
+.finding-source { color: var(--muted, #888); margin-left: auto; }
+
+.finding-body { font-size: 13px; line-height: 1.45; }
+.finding-body > div { margin: 3px 0; }
+.finding-affected code { font-size: 12px; }
+
+.finding-actions {
+  display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap;
+}
+.finding-actions .cta-btn { padding: 4px 10px; font-size: 12px; }
+
 .cta-btn-secondary {
   background: var(--bg); color: var(--primary); border: 1px solid var(--border);
 }

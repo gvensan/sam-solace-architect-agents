@@ -1249,6 +1249,13 @@
       try {
         const res = await fetch(`/api/engagements/${encodeURIComponent(eid)}/design`, { method: "DELETE" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        // The backend cascade-wipes Review state (findings + reviews/*.md
+        // + review step status). Mirror that on the frontend by clearing
+        // the persisted phase-handoff hint and any Auto-mode flag so a
+        // re-run can re-fire the design handoff + findings cards cleanly.
+        _clearPhaseHint(eid, "design");
+        _clearPhaseHint(eid, "review");
+        setAutoMode(eid, false);
         closeModal();
         render();
       } catch (err) {
@@ -2313,11 +2320,14 @@
     design: {
       nextLabel: "Review",
       ctaLabel: "Start Review →",
-      agent: null,
-      kickoff: null,
-      pendingMessage: "Review agents aren't wired up yet — for now you can inspect the design output on the Artifacts tab.",
+      agent: "SAOrchestratorAgent",
+      kickoff: "Phase: review\n\nRun the Review phase. Fan out to peer_SAArchitectReviewerAgent, peer_SADeveloperReviewerAgent, peer_SAOpsReviewerAgent, peer_SASecurityReviewerAgent in this turn. After all four return, read_findings, write reviews/review-summary.md with severity counts + top concerns, then set_step_status(step=\"review\", status=...) per the rule (DONE if zero critical, DONE_WITH_CONCERNS if any critical/important, BLOCKED if any reviewer returned BLOCKED).",
+      // Reviewers are non-interactive (no per-finding chat questions),
+      // so the Auto/Interactive distinction has no semantic effect for
+      // this phase — render a single CTA.
+      singleAction: true,
     },
-    // review/validation/blueprint/provisioning — add as those agents land.
+    // validation/blueprint/provisioning — add as those agents land.
   };
 
   // localStorage dedup so the in-chat handoff card fires only once per
@@ -2362,8 +2372,145 @@
   function _drainPendingPhaseHandoffs() {
     while (_pendingPhaseHandoffs.length) {
       const { step, status } = _pendingPhaseHandoffs.shift();
+      // Review completion always renders the findings card first; the
+      // phase-handoff card (review → validation) only renders when
+      // validation has a PHASE_NEXT entry (i.e. validation agent is wired).
+      if (step === "review") {
+        renderFindingsCard().catch(() => { /* best-effort */ });
+      }
       renderPhaseHandoffCard(step, status);
     }
+  }
+
+  // Build the findings card shown after Review completes. Fetches the
+  // engagement's findings via /api/engagements/<eid>/findings (only
+  // status=pending — applied/deferred findings are excluded so the user
+  // sees what still needs action). For each finding, render a row with
+  // Apply / Defer / Discuss buttons; clicking dispatches a follow-up
+  // chat message to SAOrchestratorAgent, which the orchestrator's
+  // prompt handles via update_finding_status / peer dispatch.
+  async function renderFindingsCard() {
+    const eid = currentProjectId?.();
+    if (!eid) return;
+    // Dedup — if a findings card is already on screen this session,
+    // skip. Re-renders can fire if the orchestrator calls
+    // set_step_status(step="review") twice (e.g. after a Discuss round
+    // that re-runs aggregation). Use a single card per session; pending
+    // findings update naturally as the user clicks Apply/Defer.
+    if (chatLog.querySelector(".findings-card")) return;
+    let findings;
+    try {
+      findings = await fetch(`/api/engagements/${encodeURIComponent(eid)}/findings?status=pending`)
+        .then(r => r.json());
+    } catch { return; }
+    if (!Array.isArray(findings) || !findings.length) {
+      // Review produced no findings — render a tiny "all clear" card.
+      const ok = document.createElement("div");
+      ok.className = "chat-msg agent findings-card findings-empty";
+      ok.innerHTML = `
+        <div class="findings-header">✓ Review complete — no findings recorded.</div>
+        <p class="muted">All four reviewer agents (architect / developer / ops / security) audited the design and found no issues to address.</p>`;
+      chatLog.appendChild(ok);
+      chatLog.scrollTop = chatLog.scrollHeight;
+      return;
+    }
+
+    // Group by severity, then by source agent.
+    const bySeverity = { critical: [], important: [], advisory: [] };
+    for (const f of findings) {
+      const sev = (f.severity || "advisory").toLowerCase();
+      if (bySeverity[sev]) bySeverity[sev].push(f);
+      else bySeverity.advisory.push(f);
+    }
+
+    const card = document.createElement("div");
+    card.className = "chat-msg agent findings-card";
+    const counts = `${bySeverity.critical.length} critical · ${bySeverity.important.length} important · ${bySeverity.advisory.length} advisory`;
+    card.innerHTML = `
+      <div class="findings-header">
+        <span class="findings-icon">🔍</span>
+        <span class="findings-title">Review findings</span>
+        <span class="findings-counts">${escapeHtml(counts)}</span>
+      </div>
+      <p class="muted">For each finding, choose <strong>Apply</strong> (Domain fixes it), <strong>Defer</strong> (converts to an open-item), or <strong>Discuss</strong> (ask the source reviewer a question).</p>
+      <div class="findings-list"></div>`;
+    const list = card.querySelector(".findings-list");
+    const renderGroup = (sev) => {
+      const items = bySeverity[sev];
+      if (!items.length) return;
+      for (const f of items) {
+        const row = document.createElement("div");
+        row.className = `finding-row severity-${escapeHtml(sev)}`;
+        row.dataset.findingId = f.id;
+        row.innerHTML = `
+          <div class="finding-header">
+            <span class="finding-badge severity-${escapeHtml(sev)}">${escapeHtml(sev.toUpperCase())}</span>
+            <span class="finding-id">${escapeHtml(f.id || "?")}</span>
+            <span class="finding-source">${escapeHtml(f.source_agent || "")}</span>
+          </div>
+          <div class="finding-body">
+            <div class="finding-desc">${escapeHtml(f.description || "")}</div>
+            <div class="finding-affected"><strong>Affected:</strong> <code>${escapeHtml(f.affected_artifact || "")}</code></div>
+            <div class="finding-rec"><strong>Recommendation:</strong> ${escapeHtml(f.recommendation || "")}</div>
+          </div>
+          <div class="finding-actions">
+            <button type="button" class="cta-btn finding-apply" data-action="Apply">Apply</button>
+            <button type="button" class="cta-btn cta-btn-secondary finding-defer" data-action="Defer">Defer</button>
+            <button type="button" class="cta-btn cta-btn-secondary finding-discuss" data-action="Discuss">Discuss</button>
+          </div>`;
+        list.appendChild(row);
+      }
+    };
+    renderGroup("critical");
+    renderGroup("important");
+    renderGroup("advisory");
+
+    // Wire button clicks — each one dispatches a follow-up chat message
+    // to SAOrchestratorAgent. The orchestrator's prompt knows how to
+    // handle "Apply finding F<id>" / "Defer finding F<id>" / "Discuss
+    // finding F<id>: <question>" inputs (Finding resolution protocol).
+    card.querySelectorAll(".finding-row").forEach(row => {
+      const fid = row.dataset.findingId;
+      row.querySelectorAll("[data-action]").forEach(btn => {
+        btn.addEventListener("click", () => {
+          if (btn.disabled) return;
+          const action = btn.dataset.action;
+          // For Discuss, prompt the user for the question inline.
+          let kickoff;
+          if (action === "Discuss") {
+            const q = window.prompt(
+              `Discuss finding ${fid} — what's your question for the reviewer?`,
+              ""
+            );
+            if (!q || !q.trim()) return;
+            kickoff = `Discuss finding ${fid}: ${q.trim()}`;
+          } else {
+            kickoff = `${action} finding ${fid}`;
+          }
+          // Lock just this row's buttons so the user can act on other
+          // findings while this one is in flight.
+          row.querySelectorAll("[data-action]").forEach(b => b.disabled = true);
+          row.classList.add("finding-row-pending");
+
+          // Dispatch via the existing chat path; SAOrchestratorAgent is
+          // already the current agent post-Review.
+          applyChat("open");
+          const sel = document.getElementById("chat-agent-select");
+          if (sel) {
+            const opt = Array.from(sel.options).find(o => o.value === "SAOrchestratorAgent");
+            if (opt) sel.value = "SAOrchestratorAgent";
+          }
+          const ci = document.getElementById("chat-input");
+          if (ci) {
+            ci.value = kickoff;
+            chatForm?.requestSubmit?.();
+          }
+        });
+      });
+    });
+
+    chatLog.appendChild(card);
+    chatLog.scrollTop = chatLog.scrollHeight;
   }
 
   // Render the explicit "phase complete → next action" card. Idempotent via
@@ -2383,16 +2530,19 @@
 
     const card = document.createElement("div");
     card.className = "chat-msg agent phase-handoff";
-    const bodyText = cfg.agent && cfg.kickoff
+    const showBothModes = cfg.agent && cfg.kickoff && !cfg.singleAction;
+    const bodyText = showBothModes
       ? `Ready to move forward? Pick the pace: <strong>${escapeHtml(cfg.ctaLabel)}</strong> walks you through every decision; <strong>Start Auto ⚡</strong> takes the recommended option for each and runs straight to the end — every decision shows up live in chat so you can review.`
-      : escapeHtml(cfg.pendingMessage || `Next phase (${cfg.nextLabel}) isn't wired up yet — check back soon.`);
+      : (cfg.agent && cfg.kickoff)
+        ? `Ready to move forward? Click <strong>${escapeHtml(cfg.ctaLabel)}</strong> to begin.`
+        : escapeHtml(cfg.pendingMessage || `Next phase (${cfg.nextLabel}) isn't wired up yet — check back soon.`);
     card.innerHTML = `
       <div class="phase-handoff-eyebrow">${escapeHtml(step)} → ${escapeHtml(cfg.nextLabel)}</div>
       <h3 class="phase-handoff-title">${escapeHtml(stepDisplay)} is ${statusPhrase}</h3>
       <p class="phase-handoff-body">${bodyText}</p>
       <div class="phase-handoff-actions">
         ${cfg.agent ? `<button type="button" class="phase-handoff-cta" data-mode="interactive">${escapeHtml(cfg.ctaLabel)}</button>` : ""}
-        ${cfg.agent && cfg.kickoff ? `<button type="button" class="phase-handoff-cta phase-handoff-cta-auto" data-mode="auto" title="Take all recommended options; each decision still appears in chat as it's made.">Start Auto ⚡</button>` : ""}
+        ${showBothModes ? `<button type="button" class="phase-handoff-cta phase-handoff-cta-auto" data-mode="auto" title="Take all recommended options; each decision still appears in chat as it's made.">Start Auto ⚡</button>` : ""}
         <a class="phase-handoff-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View artifacts</a>
       </div>
       <small class="phase-handoff-hint">To redo ${escapeHtml(stepDisplay)} from scratch, use <em>Restart ${escapeHtml(stepDisplay)}</em> on the Progress page (rare; only when requirements have materially changed).</small>
