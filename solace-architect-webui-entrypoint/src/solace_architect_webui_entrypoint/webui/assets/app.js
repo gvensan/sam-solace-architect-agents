@@ -451,7 +451,16 @@
         const discoveryStatus = lifecycle?.steps?.discovery?.status || "NOT_STARTED";
         const discoveryNote = lifecycle?.steps?.discovery?.note || "";
         const discoveryDone = discoveryStatus === "DONE" || discoveryStatus === "DONE_WITH_CONCERNS";
-        const discoveryInProgress = !discoveryDone && (hasDiscoveryBrief || openItemsCount > 0 || hasDiscoverySummary);
+        // In-progress when the agent has TOUCHED the step at all — any
+        // non-NOT_STARTED status, OR artifacts exist, OR open-items
+        // accrued. The status-based check catches the early-turn window
+        // before any artifact is written (the agent's first set_step_status
+        // flips status to NEEDS_CONTEXT). Without this the Start button
+        // stays enabled for 30-90s after click, inviting double-submit.
+        const discoveryInProgress = !discoveryDone && (
+          (discoveryStatus !== "NOT_STARTED")
+          || hasDiscoveryBrief || openItemsCount > 0 || hasDiscoverySummary
+        );
 
         // Same for Design — driven by SADomainAgent's set_step_status calls.
         const designStatus = lifecycle?.steps?.design?.status || "NOT_STARTED";
@@ -460,7 +469,10 @@
         // Any artifact under a Domain scope folder means design is mid-flow.
         const designScopes = ["topic-design","broker-select","protocol-select","integration","mesh-design","ha-dr","sam-design","event-portal","migration"];
         const hasDesignArtifact = artifacts.some(a => designScopes.some(s => a.startsWith(s + "/")));
-        const designInProgress = !designDone && (hasDesignArtifact || designStatus === "NEEDS_CONTEXT");
+        const designInProgress = !designDone && (
+          (designStatus !== "NOT_STARTED")
+          || hasDesignArtifact
+        );
 
         // Active step on the lifecycle banner.
         const activeStepId = designDone ? "review"
@@ -1087,13 +1099,33 @@
         if (text) chatForm.requestSubmit?.();
       }
     };
-    root.querySelector("#start-discovery-btn")?.addEventListener("click", () =>
+    // Lock the Start/Continue button on click so the user can't double-submit
+    // before the agent has responded (and before lifecycle.steps.<step>.status
+    // is written, which is what flips the CTA to "Continue in chat →"). The
+    // disabled state survives until the next Progress page re-render, by
+    // which point the lifecycle status is set and the CTA naturally swaps.
+    const lockOnClick = (btn, startingLabel) => {
+      if (!btn) return;
+      btn.addEventListener("click", () => {
+        btn.disabled = true;
+        btn.dataset.originalText = btn.textContent;
+        btn.textContent = startingLabel;
+      });
+    };
+    const startDiscoveryBtn = root.querySelector("#start-discovery-btn");
+    const continueBtn = root.querySelector("#continue-in-chat-btn");
+    const startDesignBtn = root.querySelector("#start-design-btn");
+    lockOnClick(startDiscoveryBtn, "Starting Discovery…");
+    lockOnClick(continueBtn, "Opening chat…");
+    lockOnClick(startDesignBtn, "Starting Design…");
+
+    startDiscoveryBtn?.addEventListener("click", () =>
       openChatWith(
         "Let's start discovery — please review the intake and ask your first follow-up.",
         "SADiscoveryAgent"));
-    root.querySelector("#continue-in-chat-btn")?.addEventListener("click", () =>
+    continueBtn?.addEventListener("click", () =>
       openChatWith("", null));
-    root.querySelector("#start-design-btn")?.addEventListener("click", () =>
+    startDesignBtn?.addEventListener("click", () =>
       openChatWith(
         "Discovery is complete. Read the discovery brief, then begin with topic-design (scope 1) and walk through the design scopes in their canonical order. Skip scopes the brief opts out of. Inside each scope, ask me only when there is a blocking decision to make.",
         "SADomainAgent"));
@@ -2590,6 +2622,17 @@
 
     // Turn is done — hide the sticky activity bar until the next turn opens.
     setActivityBar(null);
+
+    // Re-render the current page if we're on Progress / Overview so the
+    // CTA reflects the latest lifecycle status — flips Start Discovery →
+    // Continue in chat the moment the agent's first set_step_status lands,
+    // closing the "button stays clickable after I clicked it" window.
+    try {
+      const view = (typeof currentView === "function") ? currentView() : "";
+      if (view === "overview" || view === "progress") {
+        if (typeof render === "function") render();
+      }
+    } catch { /* swallow — re-render is best-effort */ }
   }
 
   // Normalize the question-card counter. The agent sometimes emits
