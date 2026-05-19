@@ -2322,18 +2322,23 @@
       if (prev !== undefined && !wasDone && isDone) {
         renderPhaseHandoffCard(step, status);
       }
-      // Transition OUT of DONE — clear the dedup flag so the next DONE re-fires.
+      // Transition OUT of DONE — clear the dedup flag so the next DONE re-fires,
+      // and also clear the sticky agent for this engagement so a fresh
+      // restart re-binds the dropdown to the configured default.
       if (wasDone && !isDone) {
         _clearPhaseHint(eid, step);
+        clearStickyAgent(eid);
       }
     }
     // If a step disappeared from the lifecycle file (e.g., restart cleared it
-    // entirely), also clear the hint so a fresh completion re-fires.
+    // entirely), also clear the hint and sticky-agent so a fresh completion
+    // re-fires and the next engagement opens on the configured default.
     for (const key of Object.keys(_lastLifecycleStatuses)) {
       if (!key.startsWith(`${eid}/`)) continue;
       const step = key.slice(eid.length + 1);
       if (!seenSteps.has(step) && _lastLifecycleStatuses[key]) {
         _clearPhaseHint(eid, step);
+        clearStickyAgent(eid);
         delete _lastLifecycleStatuses[key];
       }
     }
@@ -3084,6 +3089,11 @@
           const text = extractAgentText(ev);
           if (text) startOrUpdateAgentBubble(text);
         } else if (ev.type === "FinalResponse" || ev.type === "Task") {
+          // Capture the responding agent so loadAgents() can restore it on
+          // page reload — closes the "follow-up went to the wrong agent
+          // after page re-init" bug.
+          const ag = _extractRespondingAgent(ev) || (chatAgentSelect?.value || null);
+          if (ag) setStickyAgent(currentProjectId(), ag);
           finalizeAgentBubble(extractAgentText(ev));
         } else if (ev.type === "Error") {
           const msg = ev.data?.message || ev.data?.error || "(error)";
@@ -3103,6 +3113,36 @@
 
   const chatAgentSelect = document.getElementById("chat-agent-select");
 
+  // Sticky agent selection per engagement. Captured on FinalResponse, restored
+  // by loadAgents() on page init. Without this, the dropdown reverts to the
+  // gateway-configured default on every page reload, sending follow-up
+  // messages to the wrong agent (the "proceed in order" misroute we saw).
+  function _lastAgentKey(eid) { return `sa.last_agent.${eid}`; }
+  function getStickyAgent(eid) {
+    if (!eid) return null;
+    try { return localStorage.getItem(_lastAgentKey(eid)) || null; }
+    catch { return null; }
+  }
+  function setStickyAgent(eid, agentName) {
+    if (!eid || !agentName) return;
+    try { localStorage.setItem(_lastAgentKey(eid), agentName); } catch {}
+  }
+  function clearStickyAgent(eid) {
+    if (!eid) return;
+    try { localStorage.removeItem(_lastAgentKey(eid)); } catch {}
+  }
+  // Pull the responding agent's name from a FinalResponse event payload.
+  // SAM attaches it to status.message.metadata.agent_name in
+  // _publish_text_as_partial_a2a_status_update. Fall back to whatever the
+  // dropdown was set to when the message was sent.
+  function _extractRespondingAgent(ev) {
+    try {
+      return ev?.data?.status?.message?.metadata?.agent_name
+          || ev?.data?.metadata?.agent_name
+          || null;
+    } catch { return null; }
+  }
+
   async function loadAgents() {
     if (!chatAgentSelect) return;
     // Preserve whatever the user picked so the 15s re-poll doesn't snap the
@@ -3118,11 +3158,15 @@
         return;
       }
       const names = new Set(agents.map(a => a.name));
-      // Resolve which agent should end up selected: user's prior pick wins if
-      // still on the mesh; otherwise fall back to the configured default.
-      const desired = (previousChoice && names.has(previousChoice))
-        ? previousChoice
-        : defaultName;
+      // Resolve which agent should end up selected, in this preference order:
+      //   1. User's prior pick in this session (the dropdown value right now).
+      //   2. Sticky agent for the current engagement (captured from the last
+      //      FinalResponse — survives page reload).
+      //   3. Gateway-configured default_agent_name.
+      const sticky = getStickyAgent(currentProjectId());
+      const desired = (previousChoice && names.has(previousChoice)) ? previousChoice
+                    : (sticky && names.has(sticky))                 ? sticky
+                    : defaultName;
       chatAgentSelect.innerHTML = agents.map(a =>
         `<option value="${escapeHtml(a.name)}"${a.name === desired ? " selected" : ""}>${escapeHtml(a.name)}</option>`
       ).join("");
