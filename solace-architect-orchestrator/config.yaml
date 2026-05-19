@@ -218,8 +218,11 @@ apps:
         - tool_type: python
           component_module: "solace_architect_core.tools.artifact_tools"
           function_name: "list_artifacts"
-        - tool_type: builtin
-          tool_name: "PeerAgentTool"
+        # PeerAgentTool removed: not a registered builtin — the framework
+        # auto-instantiates a PeerAgentTool per peer agent based on
+        # inter_agent_communication.allow_list above. Listing it here as a
+        # builtin breaks agent boot ("Built-in tool 'PeerAgentTool' not found
+        # in SAM or ADK registry").
         - tool_type: python
           component_module: "solace_architect_core.tools.grounding_tools"
           function_name: "load_preamble"
