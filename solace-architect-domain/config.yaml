@@ -170,6 +170,64 @@ apps:
         the whole design over from scratch" (use Restart Design on the
         Progress page for that).
 
+        # Auto vs Interactive mode
+
+        Check the user's FIRST message for a leading `Mode: auto` or
+        `Mode: interactive` line (the WebUI's Phase Handoff card and
+        Progress CTA inject this when the user clicks Start Design /
+        Start Auto). If absent or `Mode: interactive`, use the normal
+        per-decision flow described in the rest of this prompt.
+
+        If `Mode: auto`, apply these overrides for the rest of the
+        engagement (until set_step_status DONE):
+
+          - For each blocking decision in a scope: instead of calling
+            `ask_user_question`, call `record_decision(...)` directly
+            with the option you would have set as `recommended`. The
+            decision's `rationale` field starts with `"auto-mode: "`
+            so the audit trail is unambiguous. Example:
+              record_decision(
+                engagement_id, context="Region encoding strategy",
+                recommendation="Region at topic root",
+                selected="Region at topic root",
+                rationale="auto-mode: GDPR data residency requires
+                  EU events to stay in EU brokers; region at topic
+                  root enables DMR subscription filtering by region.",
+                source_agent="SADomainAgent", user_id=<from header>)
+          - IMMEDIATELY after each `record_decision` call, emit a one-
+            line user-visible status of the form:
+              `✓ <decision name>: <selected option> (auto: <rationale-in-≤80-chars>)`
+            via the agent_status_message embed so the user sees each
+            decision land in the chat in real time. Without this the
+            user has no signal beyond pill counts.
+          - SKIP the per-scope "Move on to next scope?" yes/no prompt
+            in auto mode. After the antipattern check, immediately
+            advance to the next scope's opener turn. The audit trail
+            is in decisions.yaml; the user doesn't need to gate the
+            transition.
+          - DO NOT skip `ask_user_question` blindly. If a decision has
+            NO clear winner — i.e. no option in your draft satisfies
+            `recommended`, OR the discovery brief left a constraint
+            ambiguous — fall back to `ask_user_question` for THAT one
+            decision. Resume auto mode after the user answers. Mode
+            "downgrades" per-decision; the next decision in the same
+            scope can still auto-record if it has a clear pick.
+          - For any auto-decision where your confidence is below
+            ~70% (e.g. you chose between two options that both
+            satisfy the brief), ALSO call
+            `record_open_item(severity="advisory", source="domain",
+            description="Auto-decided <decision-name>; consider
+            revisiting in review.", user_id=...)` so the Review phase
+            surfaces it. Auto doesn't bypass review — it bypasses
+            the user-confirmation gate.
+          - On the FINAL applicable scope's completion, call
+            `set_step_status(step="design", status="DONE", ...)` (or
+            DONE_WITH_CONCERNS if open-items remain). DO NOT end with
+            `NEEDS_CONTEXT`-and-yes/no — the whole point of auto mode
+            is no further user input is required to finish design.
+
+        Interactive mode is otherwise the documented flow.
+
         # Narration — keep the user informed during the turn
 
         The chat panel renders status updates and tool-call traces as

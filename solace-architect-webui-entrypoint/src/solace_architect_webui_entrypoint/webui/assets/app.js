@@ -1029,15 +1029,18 @@
             <div class="progress-cta-eyebrow">Discovery → Design</div>
             <h2>Discovery is complete ${badge}</h2>
             ${discoveryNote ? `<p>${escapeHtml(discoveryNote)}</p>` : ""}
-            <p>Next step: <strong>Design</strong>. Click
-            <strong>Start Design →</strong> to open SADomainAgent in chat —
-            it will walk you through the nine design scopes (topic taxonomy,
-            broker selection, protocols, integration, mesh, HA/DR, SAM,
-            event-portal, migration), confirming each decision with you as
-            an interactive form.</p>
+            <p>Next step: <strong>Design</strong>. SADomainAgent will walk
+            the nine design scopes (topic taxonomy, broker selection,
+            protocols, integration, mesh, HA/DR, SAM, event-portal,
+            migration). Pick the pace: <strong>Start Design</strong>
+            confirms every decision with you; <strong>Start Auto ⚡</strong>
+            takes the recommended option for each and runs to the end —
+            every decision still surfaces in chat as it's made.</p>
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
-            <button id="start-design-btn" class="cta-btn">Start Design →</button>
+            <button id="start-design-btn" class="cta-btn" data-mode="interactive">Start Design →</button>
+            <button id="start-design-auto-btn" class="cta-btn cta-btn-auto" data-mode="auto"
+                    title="Auto mode: take all recommended options; every decision still appears live in chat and is recorded in decisions.yaml with rationale.">Start Auto ⚡</button>
             <a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View brief →</a>
           </div>
           ${restartDiscoveryRow}
@@ -1115,9 +1118,21 @@
     const startDiscoveryBtn = root.querySelector("#start-discovery-btn");
     const continueBtn = root.querySelector("#continue-in-chat-btn");
     const startDesignBtn = root.querySelector("#start-design-btn");
+    const startDesignAutoBtn = root.querySelector("#start-design-auto-btn");
     lockOnClick(startDiscoveryBtn, "Starting Discovery…");
     lockOnClick(continueBtn, "Opening chat…");
     lockOnClick(startDesignBtn, "Starting Design…");
+    lockOnClick(startDesignAutoBtn, "Starting Auto…");
+
+    // Shared kickoff body for Design; the click handlers prefix
+    // "Mode: <mode>" so the Domain agent's prompt branches accordingly.
+    const DESIGN_KICKOFF = "Discovery is complete. Read the discovery brief, then begin with topic-design (scope 1) and walk through the design scopes in their canonical order. Skip scopes the brief opts out of. Inside each scope, ask me only when there is a blocking decision to make.";
+    // When EITHER design button is clicked, lock both so a fast double-tap
+    // can't dispatch both interactive and auto for the same transition.
+    const lockBothDesignButtons = () => {
+      if (startDesignBtn) startDesignBtn.disabled = true;
+      if (startDesignAutoBtn) startDesignAutoBtn.disabled = true;
+    };
 
     startDiscoveryBtn?.addEventListener("click", () =>
       openChatWith(
@@ -1125,10 +1140,14 @@
         "SADiscoveryAgent"));
     continueBtn?.addEventListener("click", () =>
       openChatWith("", null));
-    startDesignBtn?.addEventListener("click", () =>
-      openChatWith(
-        "Discovery is complete. Read the discovery brief, then begin with topic-design (scope 1) and walk through the design scopes in their canonical order. Skip scopes the brief opts out of. Inside each scope, ask me only when there is a blocking decision to make.",
-        "SADomainAgent"));
+    startDesignBtn?.addEventListener("click", () => {
+      lockBothDesignButtons();
+      openChatWith(`Mode: interactive\n\n${DESIGN_KICKOFF}`, "SADomainAgent");
+    });
+    startDesignAutoBtn?.addEventListener("click", () => {
+      lockBothDesignButtons();
+      openChatWith(`Mode: auto\n\n${DESIGN_KICKOFF}`, "SADomainAgent");
+    });
     root.querySelector("#restart-discovery-btn")?.addEventListener("click", () =>
       openRestartDiscoveryModal(eid));
     root.querySelector("#restart-design-btn")?.addEventListener("click", () =>
@@ -1822,13 +1841,24 @@
     } else if (discoveryInProgress) {
       action = { label: "Continue Discovery →", agent: "SADiscoveryAgent", prime: "" };
     } else if (discoveryDone) {
-      // Discovery done → next step is Design. Switch to SADomainAgent
-      // and prime a kickoff message that asks it to read the brief and
-      // walk through the first scope.
+      // Discovery done → next step is Design. Two buttons surface here:
+      // Start Design (interactive — confirm every decision) and Start
+      // Auto ⚡ (take all recommended options, run to completion). The
+      // click handler picks up data-mode and prefixes the kickoff with
+      // "Mode: <mode>" so the Domain agent branches on first turn.
+      const designKickoff = "Discovery is complete. Read the discovery brief, then begin with topic-design (scope 1) and walk through the design scopes in their canonical order. Skip scopes the brief opts out of. Inside each scope, ask me only when there is a blocking decision to make.";
       action = {
         label: "Start Design →",
         agent: "SADomainAgent",
-        prime: "Discovery is complete. Read the discovery brief, then begin with topic-design (scope 1) and walk through the design scopes in their canonical order. Skip scopes the brief opts out of. Inside each scope, ask me only when there is a blocking decision to make.",
+        prime: designKickoff,
+        mode: "interactive",
+        autoVariant: {
+          label: "Start Auto ⚡",
+          agent: "SADomainAgent",
+          prime: designKickoff,
+          mode: "auto",
+          title: "Take all recommended options; every decision still appears live in chat as it's made.",
+        },
       };
     }
 
@@ -1858,14 +1888,36 @@
             ? `<a class="cta-btn welcome-action" href="${action.href}">${escapeHtml(action.label)}</a>`
             : `<button class="cta-btn welcome-action"
                        data-prime="${escapeHtml(action.prime || "")}"
-                       data-agent="${escapeHtml(action.agent || "")}">${escapeHtml(action.label)}</button>`}
+                       data-agent="${escapeHtml(action.agent || "")}"
+                       data-mode="${escapeHtml(action.mode || "interactive")}">${escapeHtml(action.label)}</button>`}
+          ${action.autoVariant
+            ? `<button class="cta-btn cta-btn-auto welcome-action"
+                       data-prime="${escapeHtml(action.autoVariant.prime || "")}"
+                       data-agent="${escapeHtml(action.autoVariant.agent || "")}"
+                       data-mode="${escapeHtml(action.autoVariant.mode || "auto")}"
+                       title="${escapeHtml(action.autoVariant.title || "")}">${escapeHtml(action.autoVariant.label)}</button>`
+            : ""}
         </div>` : ""}
         <p class="welcome-hint">Or just type your question below — the agent has full project context.</p>
       </div>`;
 
     chatLog.querySelectorAll(".welcome-action[data-prime]").forEach(btn => {
       btn.addEventListener("click", () => {
-        const prime = btn.getAttribute("data-prime") || "";
+        // Disable on first click — same double-submit guard as the
+        // Progress CTA and Phase Handoff card. Welcome-card buttons
+        // auto-submit a primed message; without the lock a double
+        // tap fires two POSTs to /api/chat/message. Also lock the
+        // sibling action button (the Interactive/Auto pair) so the
+        // user can't accidentally fire both modes for the same phase.
+        if (btn.disabled) return;
+        chatLog.querySelectorAll(".welcome-action[data-prime]").forEach(b => b.disabled = true);
+        const originalLabel = btn.textContent;
+        btn.textContent = originalLabel.replace(/[→⚡]\s*$/,"").trim() + "…";
+        const rawPrime = btn.getAttribute("data-prime") || "";
+        const mode = btn.getAttribute("data-mode") || "interactive";
+        // Prepend the mode marker as the first line; Domain reads it
+        // on the first turn and branches into Auto-mode rules if set.
+        const prime = rawPrime ? `Mode: ${mode}\n\n${rawPrime}` : rawPrime;
         const agent = btn.getAttribute("data-agent") || "";
         applyChat("open");
         // Switch the chat agent dropdown before priming so the message
@@ -2291,36 +2343,46 @@
     const card = document.createElement("div");
     card.className = "chat-msg agent phase-handoff";
     const bodyText = cfg.agent && cfg.kickoff
-      ? `Ready to move forward? Click <strong>${escapeHtml(cfg.ctaLabel)}</strong> below to begin the ${escapeHtml(cfg.nextLabel)} phase — this opens ${escapeHtml(cfg.agent)} in chat with a primed kickoff message.`
+      ? `Ready to move forward? Pick the pace: <strong>${escapeHtml(cfg.ctaLabel)}</strong> walks you through every decision; <strong>Start Auto ⚡</strong> takes the recommended option for each and runs straight to the end — every decision shows up live in chat so you can review.`
       : escapeHtml(cfg.pendingMessage || `Next phase (${cfg.nextLabel}) isn't wired up yet — check back soon.`);
     card.innerHTML = `
       <div class="phase-handoff-eyebrow">${escapeHtml(step)} → ${escapeHtml(cfg.nextLabel)}</div>
       <h3 class="phase-handoff-title">${escapeHtml(stepDisplay)} is ${statusPhrase}</h3>
       <p class="phase-handoff-body">${bodyText}</p>
       <div class="phase-handoff-actions">
-        ${cfg.agent ? `<button type="button" class="phase-handoff-cta">${escapeHtml(cfg.ctaLabel)}</button>` : ""}
+        ${cfg.agent ? `<button type="button" class="phase-handoff-cta" data-mode="interactive">${escapeHtml(cfg.ctaLabel)}</button>` : ""}
+        ${cfg.agent && cfg.kickoff ? `<button type="button" class="phase-handoff-cta phase-handoff-cta-auto" data-mode="auto" title="Take all recommended options; each decision still appears in chat as it's made.">Start Auto ⚡</button>` : ""}
         <a class="phase-handoff-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View artifacts</a>
       </div>
       <small class="phase-handoff-hint">To redo ${escapeHtml(stepDisplay)} from scratch, use <em>Restart ${escapeHtml(stepDisplay)}</em> on the Progress page (rare; only when requirements have materially changed).</small>
     `;
 
-    card.querySelector(".phase-handoff-cta")?.addEventListener("click", () => {
-      applyChat("open");
-      if (cfg.agent) {
-        const sel = document.getElementById("chat-agent-select");
-        if (sel) {
-          const opt = Array.from(sel.options).find(o => o.value === cfg.agent);
-          if (opt) sel.value = cfg.agent;
+    card.querySelectorAll(".phase-handoff-cta").forEach(btn => {
+      btn.addEventListener("click", () => {
+        // Disable BOTH mode buttons on click so a fast double-tap can't
+        // fire interactive AND auto for the same phase transition.
+        card.querySelectorAll(".phase-handoff-cta").forEach(b => b.disabled = true);
+        const mode = btn.dataset.mode || "interactive";
+        btn.textContent = mode === "auto" ? "Starting Auto…" : `${cfg.ctaLabel.replace(/→$/,"").trim()}…`;
+        applyChat("open");
+        if (cfg.agent) {
+          const sel = document.getElementById("chat-agent-select");
+          if (sel) {
+            const opt = Array.from(sel.options).find(o => o.value === cfg.agent);
+            if (opt) sel.value = cfg.agent;
+          }
         }
-      }
-      if (cfg.kickoff) {
-        const ci = document.getElementById("chat-input");
-        if (ci) {
-          ci.value = cfg.kickoff;
-          ci.focus();
-          chatForm.requestSubmit?.();
+        if (cfg.kickoff) {
+          const ci = document.getElementById("chat-input");
+          if (ci) {
+            // Prepend the mode marker as the first line — Domain's prompt
+            // reads it on the first turn and switches behaviour accordingly.
+            ci.value = `Mode: ${mode}\n\n${cfg.kickoff}`;
+            ci.focus();
+            chatForm.requestSubmit?.();
+          }
         }
-      }
+      });
     });
 
     chatLog.appendChild(card);
@@ -2991,6 +3053,26 @@
     return card;
   }
 
+  // Shared error-recovery for the three user-submit paths
+  // (text input, form card, quick-reply chip). All three previously left
+  // pendingAgentMsg set and the sticky activity bar pinned on submit
+  // failure — user saw a "Thinking..." spinner AND an error message.
+  // This helper restores clean state so the user can retry.
+  function _recoverFromSubmitError(errMsg, cardEl) {
+    if (pendingAgentMsg) {
+      try { pendingAgentMsg.el.remove(); } catch {}
+      pendingAgentMsg = null;
+    }
+    setActivityBar(null);
+    if (cardEl) {
+      // Unlock the form / chip card so the user can retry. submitAnswer
+      // and submitQuickReply lock these on submit; chatForm has no card.
+      Array.from(cardEl.querySelectorAll("input, button, textarea")).forEach(el => el.disabled = false);
+      cardEl.classList.remove("question-answered");
+    }
+    appendChatMessage("agent", `[error] ${errMsg} — please retry`);
+  }
+
   async function submitQuickReply({ kind, value, displayText, note, cardEl }) {
     if (!chatSessionId) chatSessionId = deriveChatSessionId();
     if (!chatEventSource) openSseStream(chatSessionId);
@@ -3018,10 +3100,7 @@
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch (err) {
-      // Unlock so the user can retry.
-      Array.from(cardEl.querySelectorAll("button, textarea")).forEach(el => el.disabled = false);
-      cardEl.classList.remove("question-answered");
-      appendChatMessage("agent", "[error] could not send reply: " + err.message + " — please retry");
+      _recoverFromSubmitError("could not send reply: " + err.message, cardEl);
     }
   }
 
@@ -3103,11 +3182,7 @@
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch (err) {
-      appendChatMessage("agent", "[error] could not submit answer: " + err.message + " — please retry");
-      // Re-enable so the user can retry; previous user-bubble stays in
-      // history but a fresh click POSTs again with the same payload.
-      cardEl.classList.remove("question-answered");
-      lockedInputs.forEach(el => el.disabled = false);
+      _recoverFromSubmitError("could not submit answer: " + err.message, cardEl);
     }
   }
 
@@ -3151,10 +3226,26 @@
           } else {
             appendChatMessage("agent", `[error] ${msg}`);
           }
+          // Clear the sticky activity bar — without this it stays pinned
+          // on "Thinking…" while the bubble shows the error message.
+          setActivityBar(null);
         }
       } catch (err) { /* ignore malformed */ }
     };
-    chatEventSource.addEventListener("complete", () => chatEventSource.close());
+    chatEventSource.addEventListener("complete", () => {
+      // CRITICAL: null the variable, don't just .close(). Every
+      // `if (!chatEventSource) openSseStream(...)` check throughout
+      // the code is a truthiness check, not a readyState check —
+      // leaving a closed-but-non-null reference here means the next
+      // turn's submit handler thinks the stream is still open, never
+      // calls openSseStream, and every subsequent SSE event from the
+      // agent vanishes into the void until the user refreshes. Same
+      // pattern as the logout teardown earlier in the file.
+      if (chatEventSource) {
+        chatEventSource.close();
+        chatEventSource = null;
+      }
+    });
   }
 
   const chatAgentSelect = document.getElementById("chat-agent-select");
@@ -3257,13 +3348,14 @@
     if (eid) body.engagement_id = eid;
 
     try {
-      await fetch("/api/chat/message", {
+      const res = await fetch("/api/chat/message", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch (err) {
-      appendChatMessage("agent", "[error] could not dispatch: " + err.message);
+      _recoverFromSubmitError("could not dispatch: " + err.message);
     }
   });
 
@@ -3401,8 +3493,12 @@
     chatEventSource.addEventListener("error", () => {
       // readyState 2 = CLOSED. readyState 0 = reconnecting (don't panic).
       setTimeout(() => {
-        if (chatEventSource && chatEventSource.readyState === 2 && pendingAgentMsg) {
-          _renderSseDesyncRecoveryCard();
+        if (chatEventSource && chatEventSource.readyState === 2) {
+          // Null the reference so the next submit's lazy-reopen check
+          // actually fires. Without this, every subsequent turn would
+          // talk to a closed stream and lose all events.
+          chatEventSource = null;
+          if (pendingAgentMsg) _renderSseDesyncRecoveryCard();
         }
       }, 2000);
     });

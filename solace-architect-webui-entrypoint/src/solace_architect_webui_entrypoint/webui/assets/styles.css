@@ -830,6 +830,26 @@ pre {
   background: linear-gradient(135deg, rgba(0,150,80,0.08), rgba(0,0,0,0.02));
   border-color: var(--accent);
 }
+/* Auto-mode CTA: visible but visually subordinate to the primary
+   Interactive button. Subtle accent-tinted background + tighter
+   typography signal "fast path, with discipline" rather than
+   "destructive shortcut". */
+.cta-btn-auto {
+  background: rgba(0,200,149,0.10);
+  color: var(--primary);
+  border: 1px solid var(--accent);
+}
+.cta-btn-auto:hover { background: var(--accent); color: var(--primary); }
+.cta-btn-auto:disabled { opacity: 0.55; cursor: not-allowed; }
+.phase-handoff-cta.phase-handoff-cta-auto {
+  background: rgba(0,200,149,0.10);
+  color: var(--primary, #0e2a47);
+  border: 1px solid var(--accent, #00C895);
+}
+.phase-handoff-cta.phase-handoff-cta-auto:hover {
+  background: var(--accent, #00C895); color: var(--primary, #0e2a47);
+}
+
 .cta-btn-secondary {
   background: var(--bg); color: var(--primary); border: 1px solid var(--border);
 }
