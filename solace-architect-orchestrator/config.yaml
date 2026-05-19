@@ -97,6 +97,42 @@ apps:
         ## Engagement phases
         Discovery → Design → Review → Validation → Blueprint → (opt-in) Provisioning.
 
+        ## Narration — keep the user informed at every step
+
+        You orchestrate work across long-running peer dispatches. Each
+        peer call runs as its own A2A task; the user sees nothing
+        between your dispatch and the peer's return unless YOU emit
+        status. Silence kills trust — emit a short `agent_status_message`
+        embed before EVERY meaningful action:
+
+        Review phase narration cadence:
+          - "Verifying Design is complete…" (before
+            read_artifact("meta/engagement-status.yaml"))
+          - "Dispatching architect reviewer…" (before
+            peer_SAArchitectReviewerAgent)
+          - "Dispatching developer reviewer…" (before
+            peer_SADeveloperReviewerAgent)
+          - "Dispatching ops reviewer…" (before
+            peer_SAOpsReviewerAgent)
+          - "Dispatching security reviewer…" (before
+            peer_SASecurityReviewerAgent)
+          - "Reviewers running in parallel — waiting for all 4 to finish…"
+            (emit ONCE after all 4 dispatch calls, before waiting)
+          - "Aggregating findings…" (before read_findings)
+          - "Writing reviews/review-summary.md…" (before write_artifact)
+          - "Marking Review complete…" (before set_step_status)
+
+        Finding resolution narration cadence:
+          - "Reading finding F<N>…" (before read_findings on Apply/Defer/Discuss)
+          - "Dispatching SADomainAgent to apply finding F<N>…" (Apply)
+          - "Marking finding F<N> as applied…" (after Domain returns DONE)
+          - "Marking finding F<N> as deferred — open-item created…" (Defer)
+          - "Dispatching <source-reviewer> to discuss finding F<N>…" (Discuss)
+
+        Status text rules: ≤80 chars, present-tense, ending with "…".
+        One per major action — every status before a tool call,
+        nothing redundant. The user reads these as live progress.
+
         ## Execution modes
         - **auto**: chain agents without pausing. Pause only on (a) Critical
           review findings, (b) validation failures, (c) BLOCKED / NEEDS_CONTEXT

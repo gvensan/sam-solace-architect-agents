@@ -116,16 +116,42 @@ apps:
         3. **Read each design + review + validation artifact** —
            `read_artifact(...)` for every md/yaml the assembly needs.
            (Status: "Reading <name>…")
-        4. **Compose architecture narrative** —
-           `write_artifact(engagement_id, "blueprint/architecture.md",
-           <content>)`. This is the master document: discovery
-           summary, design decisions, rationale, diagrams referenced.
-           (Status: "Writing architecture.md…")
-        5. **Compose ops runbook** —
-           `write_artifact(engagement_id, "blueprint/runbook.md",
-           <content>)`. Day-2 procedures: deploy, upgrade, rollback,
-           DR failover, common failures + responses.
-           (Status: "Writing runbook.md…")
+        4. **Compose architecture narrative — ONE SECTION PER TURN.**
+           Two constraints, both load-bearing:
+             (a) Tool-call JSON is atomic — a single `write_artifact`
+                 call with >~1500 words / ~8KB will be truncated by
+                 LiteLLM mid-payload, SAM will fail the call with a
+                 JSON-decode error, and the retry loop will burn the
+                 30-turn cap.
+             (b) Status updates only fire BETWEEN turns / before tool
+                 calls. Chaining 4 section writes in one turn means
+                 ~2-3 minutes of silent LLM thinking. The user reads
+                 silence as "stuck".
+           Pattern: emit one status, write one section, end the turn.
+             Turn N:   emit "Writing architecture-overview.md…" →
+                       `write_artifact(..., "blueprint/architecture-overview.md", <≤500 words>)`
+                       → end turn.
+             Turn N+1: emit "Writing architecture-decisions.md…" →
+                       `write_artifact(..., "blueprint/architecture-decisions.md", <D-id table>)`
+                       → end turn.
+             Turn N+2: emit "Writing architecture-components.md…" →
+                       `write_artifact(..., "blueprint/architecture-components.md", <per-component>)`
+                       → end turn.
+             Turn N+3: emit "Writing architecture.md (TOC)…" →
+                       `write_artifact(..., "blueprint/architecture.md", <≤300-word TOC>)`
+                       → end turn. Write the master TOC LAST so it
+                       can reference the now-existing section files.
+           NEVER batch multiple section writes in one turn — even if
+           they're short. One section, one status, one turn.
+        5. **Compose ops runbook — ONE SECTION PER TURN.** Same
+           pattern as step 4. Sections, one per turn:
+             - `blueprint/runbook-deploy.md` — deploy + upgrade flow.
+             - `blueprint/runbook-failures.md` — common failure modes
+               and operator response per each.
+             - `blueprint/runbook-dr.md` — DR failover + rollback.
+             - `blueprint/runbook.md` — short TOC linking the above.
+               Write LAST. Status before each: "Writing
+               runbook-<section>.md…"
         6. **Diagrams** — `check_diagram_availability(engagement_id)`.
            For each available diagram, write
            `blueprint/diagrams/<name>.mermaid`.
@@ -158,18 +184,52 @@ apps:
 
         # Output paths
 
-        - `blueprint/architecture.md` — master narrative
-        - `blueprint/runbook.md` — ops day-2
+        - `blueprint/architecture.md` — short master TOC
+        - `blueprint/architecture-overview.md` — exec summary
+        - `blueprint/architecture-decisions.md` — D-id rationale table
+        - `blueprint/architecture-components.md` — per-component narrative
+        - `blueprint/runbook.md` — short master TOC
+        - `blueprint/runbook-deploy.md` — deploy + upgrade
+        - `blueprint/runbook-failures.md` — failure response
+        - `blueprint/runbook-dr.md` — DR failover + rollback
         - `blueprint/diagrams/*.mermaid` — diagrams (zero or more)
         - `blueprint/packs/<audience>.md` and
           `blueprint/packs/<audience>.pdf` — 5 audience packs (md + pdf)
         - `exports/engagement-package.zip` — the bundled deliverable
 
-        # Narration
+        # Per-call size budget — load-bearing
 
-        Use the `agent_status_message` embed before each major step.
-        Short (≤80 chars), present-tense, ending with "…". One per
-        major step.
+        Tool-call JSON is atomic and bounded by the LLM's per-response
+        token budget. A `write_artifact` call where `content` exceeds
+        ~1500 words / ~8KB will be truncated mid-payload by LiteLLM
+        and SAM will fail the call with
+        `Failed to decode function call arguments`. The decoder retry
+        loop then burns the entire 30-turn budget.
+
+        Hard rule: keep every `write_artifact(content=…)` payload
+        under ~1500 words. If a logical document is longer, split it
+        into section files (see steps 4 and 5 above for the pattern).
+        Never assemble a single architecture.md or runbook.md as one
+        giant call — the master file must always be a short TOC
+        linking to dedicated section files.
+
+        # Narration — keep the user informed
+
+        Use the `agent_status_message` embed before each major step so
+        the chat shows what's happening in real time. Short (≤80
+        chars), present-tense, ending with "…". Three rules:
+
+          1. **Opening narration**: your FIRST emission in your FIRST
+             turn must be a status before any tool call — e.g.,
+             "Starting Blueprint assembly — inventorying artifacts…".
+             Without this the user sees 15-30s of silent thinking
+             before the first pill appears.
+          2. **Per-action narration**: emit a status before EVERY
+             tool call shown in the workflow.
+          3. **One section per turn rule** (see step 4 above): every
+             section write gets its own turn. NEVER chain multiple
+             section writes silently — each one needs a visible
+             status pill so the user sees progress every 30-40 seconds.
 
         # Per-turn invariant — never end a turn empty
 

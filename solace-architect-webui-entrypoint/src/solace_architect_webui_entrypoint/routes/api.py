@@ -594,15 +594,29 @@ async def intake_load(engagement_id: str) -> Any:
 # ----- Exports -----
 
 async def exports_availability(engagement_id: str) -> Any:
-    return (await blueprint_tools.check_diagram_availability(engagement_id)).data
+    r = await blueprint_tools.check_diagram_availability(engagement_id)
+    if not r.ok:
+        return {"error": r.error or "diagram availability check failed"}
+    return r.data
 
 
 async def exports_render(engagement_id: str, audience: str, format: str = "html") -> Any:
-    return (await blueprint_tools.render_audience_pack(engagement_id, audience, format)).data
+    r = await blueprint_tools.render_audience_pack(engagement_id, audience, format)
+    if not r.ok:
+        # Surface the underlying error to the frontend instead of returning
+        # null .data — the WebUI's __renderPack click handler crashes when
+        # it gets null. Common errors: "no renderer registered" (plugin
+        # didn't load) and "WeasyPrint not installed" (PDF format request
+        # without the PDF dep).
+        return {"error": r.error or "render failed", "paths": []}
+    return r.data
 
 
 async def exports_zip(engagement_id: str) -> Any:
-    return (await blueprint_tools.assemble_zip(engagement_id)).data
+    r = await blueprint_tools.assemble_zip(engagement_id)
+    if not r.ok:
+        return {"error": r.error or "zip assembly failed"}
+    return r.data
 
 
 # ----- Feedback -----

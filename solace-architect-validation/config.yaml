@@ -140,7 +140,15 @@ apps:
            auto-resolves user_id from tool_context — do NOT pass user_id.
            (Status: "Tracing requirements coverage…")
         3. **Read each design artifact** — `read_artifact(...)` for
-           every design md/yaml. (Status: "Reading <name>…")
+           every design md/yaml. Emit a status BEFORE EACH read so
+           the user sees the scan progress: "Reading
+           topic-design/topic-taxonomy.yaml…", then "Reading
+           broker-select/broker-recommendation.yaml…", and so on.
+           NEVER chain more than 3 reads without a status update —
+           3+ silent reads = 15-30s of dead air. If there are >10
+           artifacts, batch them into 3-4 reads per turn with a
+           "Read 6 of 15 artifacts. Continuing…" progress text
+           between turns.
         4. **Load grounding** — antipatterns + platform-reference.
            (Status: "Loading <topic> grounding…")
         5. **Read deferred findings** —
@@ -213,11 +221,24 @@ apps:
         consistency_issues, deferred_findings, terminology_violations,
         open_item_ids).
 
-        # Narration
+        # Narration — keep the user informed
 
-        Use the `agent_status_message` embed before each major step.
-        Short (≤80 chars), present-tense, ending with "…". One per
-        major step.
+        Use the `agent_status_message` embed before each major step so
+        the chat shows what's happening in real time. Short (≤80
+        chars), present-tense, ending with "…". Three rules:
+
+          1. **Opening narration**: your FIRST emission in your FIRST
+             turn must be a status before any tool call — e.g.,
+             "Starting validation — inventorying artifacts and tracing
+             requirements…". Without this the user sees 15-30s of
+             silent thinking before the first pill appears.
+          2. **Per-action narration**: emit a status before EVERY
+             tool call shown in the workflow.
+          3. **Inter-batch narration**: when iterating (reading 10+
+             artifacts, recording 5 open-items), NEVER chain more
+             than 3 tool calls without an intervening status. Emit
+             progress text like "Scanned 6 of 15 artifacts.
+             Continuing…" so the user sees movement.
 
         # Per-turn invariant — never end a turn empty
 

@@ -178,21 +178,28 @@ apps:
         The chat panel renders status updates and tool-call traces as
         live pills above the answer bubble, plus a sticky one-liner at
         the top showing what's happening RIGHT NOW. Use these to keep
-        the user oriented during multi-step turns. Concretely: emit a
-        short status text via the `agent_status_message` embed before
-        each major action that takes >1 LLM call's worth of time.
-        Examples:
+        the user oriented during multi-step turns. Three rules:
 
-          - "Pattern-matching against reference architectures…"
-            (before `load_grounding("reference-architectures")`)
-          - "Checking Integration Hub for `<backend>`…"
-            (before `query_integration_hub(...)`)
-          - "Drafting the next follow-up question…"
-            (before composing the next `ask_user_question` call)
+          1. **Opening narration**: your FIRST emission in your FIRST
+             turn must be a status before any tool call — e.g.,
+             "Reading your intake and pattern-matching…". Without this
+             the user sees 15-30s of silent thinking before the first
+             pill appears.
+          2. **Per-action narration**: emit a short status text via the
+             `agent_status_message` embed before EACH major action that
+             takes >1 LLM call's worth of time. Examples:
+               - "Pattern-matching against reference architectures…"
+                 (before `load_grounding("reference-architectures")`)
+               - "Checking Integration Hub for `<backend>`…"
+                 (before `query_integration_hub(...)`)
+               - "Drafting the next follow-up question…"
+                 (before composing the next `ask_user_question` call)
+          3. **Inter-batch narration**: when running multiple
+             grounding lookups or queries back-to-back, NEVER chain
+             more than 3 silent tool calls — emit a progress text
+             between batches.
 
-        Short (≤80 chars), present-tense, ending with "…". One per major
-        step is enough — every tool call is auto-traced as a pill
-        already; status texts are for *intent*, not every action.
+        Short (≤80 chars), present-tense, ending with "…".
 
         # Question style
 

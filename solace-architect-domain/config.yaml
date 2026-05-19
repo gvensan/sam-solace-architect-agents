@@ -257,23 +257,27 @@ apps:
 
         The chat panel renders status updates and tool-call traces as
         live pills above the answer bubble, plus a sticky one-liner at
-        the top showing what's happening RIGHT NOW. Emit a short
-        status text via the `agent_status_message` embed before each
-        major action that takes >1 LLM call's worth of time:
+        the top showing what's happening RIGHT NOW. Three rules:
 
-          - "Loading <scope> grounding…" (before `load_grounding(...)`)
-          - "Recording <decision name>…" (before `record_decision(...)`)
-          - "Writing <scope>/<filename>…" (before `write_artifact(...)`)
-          - "Checking antipatterns…" (before the antipattern grounding load)
-          - "Drafting the next question…" (before composing
-            `ask_user_question(...)`)
+          1. **Opening narration**: your FIRST emission in your FIRST
+             turn must be a status before any tool call — e.g.,
+             "Starting <scope> — loading grounding…". Without this the
+             user sees 15-30s of silent thinking before the first pill.
+          2. **Per-action narration**: emit a short status via the
+             `agent_status_message` embed before EACH major action:
+               - "Loading <scope> grounding…" (before load_grounding)
+               - "Recording <decision name>…" (before record_decision)
+               - "Writing <scope>/<filename>…" (before write_artifact)
+               - "Checking antipatterns…" (before antipattern grounding)
+               - "Drafting the next question…" (before ask_user_question)
+          3. **Inter-batch narration**: when chaining writes or
+             record_decisions, NEVER let 3+ silent tool calls fire in
+             a row — emit a status before each one (see the
+             artifact-write turn rule).
 
-        Short (≤80 chars), present-tense, ending with "…". One per
-        major step is enough — every tool call already shows as an
-        auto-traced pill; status texts are for *intent*, not every
-        action. The sticky activity bar shows the latest status text,
-        so the user sees what's happening even if the chat panel is
-        scrolled.
+        Short (≤80 chars), present-tense, ending with "…". The sticky
+        activity bar shows the latest status text, so the user sees
+        what's happening even if the chat panel is scrolled.
 
         # Per-scope flow — ONE DECISION OR ONE WRITE PER TURN
 
@@ -305,15 +309,28 @@ apps:
               schema-echo), OR — if this was the last decision in the
               scope — move to the artifact-write turn below.
 
-          Artifact-write turn (1 turn, no question)
-            - Status: "Writing <scope>/<filename>…" before each write.
-            - Call `write_artifact(...)` for each scope output file
-              (one to three files, depending on scope — see the
-              "Scope outputs" table). It's OK to chain multiple
-              `write_artifact` calls in this single turn since they
-              don't need user input — just ensure each one is small
-              enough not to trigger AutoContinue (split a long file
-              into related artifacts when possible).
+          Artifact-write turn (1 turn for 1-2 files, OR 2 turns for 3+ files)
+            - Status: "Writing <scope>/<filename>…" BEFORE EACH write.
+            - Hard rule: NEVER chain more than 2 `write_artifact` calls
+              in a single turn without an intervening status update.
+              Status updates only fire between turns / before tool
+              calls — 3+ silent writes = 30s+ of dead air to the user.
+            - For scopes with 1-2 outputs (e.g., broker-select,
+              protocol-select), write in ONE turn: status →
+              write_artifact(file-1) → status → write_artifact(file-2)
+              → end turn.
+            - For scopes with 3-4 outputs (e.g., topic-design,
+              mesh-design), SPLIT into two turns:
+                Turn A: status → write_artifact(file-1) → status →
+                        write_artifact(file-2) → end turn with brief
+                        progress text "<scope>: 2 of N files written.
+                        Continuing…"
+                Turn B: status → write_artifact(file-3) → status →
+                        write_artifact(file-4) → end turn (continue
+                        to antipattern step).
+            - Keep each file content under ~1500 words / ~8KB to avoid
+              tool-call JSON truncation. Split a long file into
+              related artifacts when possible.
             - Skip the "ask a question" rule for THIS turn — the
               artifact-write turn is the documented exception to the
               per-turn invariant. Instead, end with

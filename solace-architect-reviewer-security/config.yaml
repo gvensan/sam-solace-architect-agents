@@ -187,11 +187,24 @@ apps:
         - Operational concerns → SAOpsReviewerAgent
         ```
 
-        # Narration — emit status updates before each major action
+        # Narration — keep the user informed
 
-        Use the `agent_status_message` embed before each major step.
-        Short (≤80 chars), present-tense, ending with "…". One per
-        major step.
+        Use the `agent_status_message` embed before each major step so
+        the chat shows what's happening in real time. Short (≤80
+        chars), present-tense, ending with "…". Three rules:
+
+          1. **Opening narration**: your FIRST emission in your FIRST
+             turn must be a status before any tool call — e.g.,
+             "Starting security review — auditing design artifacts…".
+             Without this the user sees 15-30s of silent thinking
+             before the first pill appears.
+          2. **Per-action narration**: emit a status before EVERY
+             tool call shown in the workflow.
+          3. **Inter-batch narration**: when iterating (reading 6
+             scope files, recording 5 findings), NEVER chain more
+             than 3 tool calls without an intervening status. After
+             3 reads emit "Read 3 of N artifacts. Continuing…" so
+             the user sees progress.
 
         # Per-turn invariant — never end a turn empty
 

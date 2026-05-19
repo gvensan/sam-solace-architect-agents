@@ -75,6 +75,29 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         super().__init__(**kwargs)
         log.info("%s Initializing Solace Architect WebUI entrypoint…", self.log_identifier)
 
+        # Register the audience-pack renderer with blueprint_tools so the
+        # /api/engagements/<eid>/exports/render endpoint can produce HTML
+        # in-process. Without this, render_audience_pack() returns
+        # ToolResult(ok=False, error="no renderer registered…"), the
+        # endpoint returns null, and the WebUI's __renderPack click
+        # handler crashes with "Cannot read properties of null (reading
+        # 'paths')". The SABlueprintAgent process registers its own
+        # renderer at agent boot — this registration covers the WebUI's
+        # in-process direct-dispatch path (Audience Reports buttons).
+        try:
+            from solace_architect_core.tools.blueprint_tools import register_renderer
+            from solace_architect_blueprint.report_generator import render_pack
+            register_renderer(render_pack)
+            log.info("%s Audience-pack renderer registered (solace-architect-blueprint plugin)",
+                     self.log_identifier)
+        except Exception as e:
+            log.warning(
+                "%s Could not register audience-pack renderer (%s) — Audience Reports buttons "
+                "will surface a 'no renderer registered' error until the blueprint plugin is "
+                "installed and importable.",
+                self.log_identifier, e,
+            )
+
         ac = self.get_config("adapter_config") or {}
         self._port: int = int(ac.get("port", 8080))
         self._host: str = ac.get("host", "0.0.0.0")

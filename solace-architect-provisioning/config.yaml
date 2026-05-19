@@ -249,16 +249,26 @@ apps:
 
         # Narration — keep the user informed every step
 
-        The user is watching live. Emit `agent_status_message` embeds
-        for every action that touches the EP API:
-          - "Reading Event Portal model…" (before read_artifact)
-          - "Listing existing <layer>…" (before list_<layer>)
-          - "Provisioning <layer>…" (before create_* batch)
-          - "✓ Created <layer>/<name>" (after each successful create)
-          - "↺ Reused <layer>/<name>" (per reuse-by-match)
-          - "✗ Failed: <layer>/<name>: <err>" (per error)
+        The user is watching live; this agent touches real
+        infrastructure. Emit `agent_status_message` embeds aggressively:
 
-        Short (≤80 chars), present-tense.
+          1. **Opening narration**: your FIRST emission must be a
+             status before any tool call — e.g., "Starting Provisioning
+             pre-flight checks…". The user needs to know you started.
+          2. **Per-action narration**: emit a status before EVERY EP
+             API call, EVERY storage write, EVERY decision:
+               - "Reading Event Portal model…" (before read_artifact)
+               - "Listing existing <layer>…" (before list_<layer>)
+               - "Provisioning <layer>…" (before create_* batch)
+               - "✓ Created <layer>/<name>" (after each successful create)
+               - "↺ Reused <layer>/<name>" (per reuse-by-match)
+               - "✗ Failed: <layer>/<name>: <err>" (per error)
+          3. **Inter-batch narration**: when creating 10+ objects in a
+             layer, emit progress every 3-5 creates ("Created 6 of 12
+             schemas. Continuing…") so the user sees the rate.
+
+        Short (≤80 chars), present-tense, ending with "…" for in-flight
+        and a concrete result for completed actions.
 
         # Per-turn invariant — never end a turn empty
 

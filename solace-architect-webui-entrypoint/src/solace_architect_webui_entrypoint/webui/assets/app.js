@@ -3752,13 +3752,23 @@
           finalizeAgentBubble(extractAgentText(ev));
         } else if (ev.type === "Error") {
           const msg = ev.data?.message || ev.data?.error || "(error)";
+          const agentName = _extractRespondingAgent(ev) || chatAgentSelect?.value || "the agent";
+          // Build a rich error card instead of a one-line "[error] …"
+          // The user needs (a) what failed, (b) a concrete next step,
+          // (c) an option to see technical details.
+          const errorCard = _buildErrorCard(msg, agentName, ev.data || {});
           if (pendingAgentMsg) {
             pendingAgentMsg.el.classList.remove("agent-thinking");
             pendingAgentMsg.el.classList.add("agent-error");
-            pendingAgentMsg.el.textContent = `[error] ${msg}`;
+            pendingAgentMsg.el.innerHTML = "";
+            pendingAgentMsg.el.appendChild(errorCard);
             pendingAgentMsg = null;
           } else {
-            appendChatMessage("agent", `[error] ${msg}`);
+            const wrap = document.createElement("div");
+            wrap.className = "chat-msg agent agent-error";
+            wrap.appendChild(errorCard);
+            chatLog.appendChild(wrap);
+            chatLog.scrollTop = chatLog.scrollHeight;
           }
           // Clear the sticky activity bar — without this it stays pinned
           // on "Thinking…" while the bubble shows the error message.
@@ -3801,6 +3811,148 @@
   function clearStickyAgent(eid) {
     if (!eid) return;
     try { localStorage.removeItem(_lastAgentKey(eid)); } catch {}
+  }
+
+  // Categorize SAM's user-facing error messages so we can render a
+  // contextual card with concrete next-step guidance. SAM's
+  // common/error_handlers.py maps LLM provider errors to one of a few
+  // generic strings — those strings have stable prefixes we can match.
+  // For each category we emit (a) a short tag, (b) a "what happened"
+  // explanation, (c) a "what to try" action list, (d) optional CTA buttons.
+  function _categorizeError(msg) {
+    const m = (msg || "").toLowerCase();
+    if (m.includes("conversation history") && m.includes("too long")) {
+      return {
+        tag: "Context limit",
+        explanation: "The chat session has accumulated too many turns for the model to process.",
+        actions: [
+          "Click <strong>Start fresh session</strong> below to begin a new chat. Prior artifacts and decisions are preserved on disk.",
+          "Or: reload the page — sessions live in memory and are cleared on SAM restart.",
+        ],
+        cta: { label: "Start fresh chat session", action: "fresh-session" },
+      };
+    }
+    if (m.includes("rate limit")) {
+      return {
+        tag: "Rate limited",
+        explanation: "The LLM provider is throttling requests for this account.",
+        actions: ["Wait 30-60 seconds and retry.", "If this persists, check the provider's quota dashboard."],
+      };
+    }
+    if (m.includes("authentication") || m.includes("api key")) {
+      return {
+        tag: "Auth failed",
+        explanation: "The LLM provider rejected the API credentials.",
+        actions: [
+          "Verify the LLM_SERVICE_API_KEY env var is set correctly.",
+          "Confirm the key has access to the configured model in <code>shared_config.yaml</code>.",
+        ],
+      };
+    }
+    if (m.includes("unable to connect") || m.includes("api_connection") || m.includes("connection")) {
+      return {
+        tag: "Connection",
+        explanation: "Could not reach the LLM service endpoint.",
+        actions: [
+          "Check network connectivity from the SAM host.",
+          "Verify LLM_SERVICE_ENDPOINT in the SAM env.",
+        ],
+      };
+    }
+    if (m.includes("timed out") || m.includes("timeout")) {
+      return {
+        tag: "Timeout",
+        explanation: "The LLM didn't respond within the request budget.",
+        actions: ["Retry — transient timeouts are common under load.", "If recurring, the agent's task may be too large for one LLM call."],
+      };
+    }
+    if (m.includes("service is temporarily unavailable") || m.includes("service unavailable")) {
+      return {
+        tag: "Provider down",
+        explanation: "The LLM provider is reporting a service outage.",
+        actions: ["Check the provider's status page.", "Retry in a few minutes."],
+      };
+    }
+    if (m.includes("rejected the request") || m.includes("bad request")) {
+      // SAM's DEFAULT_BAD_REQUEST_MESSAGE — usually one of:
+      // input too long, content policy violation, malformed tool schema.
+      return {
+        tag: "Request rejected",
+        explanation: "The LLM provider rejected the request. Most common causes: context too long, a tool-call schema the model can't fulfil, or a content-policy filter.",
+        actions: [
+          "Check the SAM log (<code>sam/sam.log</code>) — the underlying provider error is logged there with the full reason.",
+          "If the chat session has many prior turns, try <strong>Start fresh session</strong> below.",
+          "If this is the first turn of a phase, retry — transient prompt-too-long errors clear on next attempt.",
+        ],
+        cta: { label: "Start fresh chat session", action: "fresh-session" },
+      };
+    }
+    return {
+      tag: "Error",
+      explanation: "The agent's turn failed.",
+      actions: [
+        "Check <code>sam/sam.log</code> for the underlying error.",
+        "Retry — many errors are transient.",
+      ],
+    };
+  }
+
+  function _buildErrorCard(msg, agentName, evData) {
+    const cat = _categorizeError(msg);
+    const card = document.createElement("div");
+    card.className = "agent-error-card";
+    const detailsId = `err-details-${Date.now()}`;
+    const actionsHtml = cat.actions.map(a => `<li>${a}</li>`).join("");
+    const ctaHtml = cat.cta
+      ? `<button type="button" class="cta-btn cta-btn-secondary agent-error-cta" data-action="${escapeHtml(cat.cta.action)}">${escapeHtml(cat.cta.label)}</button>`
+      : "";
+    card.innerHTML = `
+      <div class="agent-error-header">
+        <span class="agent-error-tag">${escapeHtml(cat.tag)}</span>
+        <span class="agent-error-agent">${escapeHtml(agentName)}</span>
+      </div>
+      <div class="agent-error-body">
+        <p class="agent-error-explanation">${escapeHtml(cat.explanation)}</p>
+        <p class="agent-error-message-from-llm">${escapeHtml(msg)}</p>
+        <details class="agent-error-actions-details">
+          <summary>What to try</summary>
+          <ul>${actionsHtml}</ul>
+        </details>
+        <details class="agent-error-tech-details" id="${detailsId}">
+          <summary>Technical details</summary>
+          <pre>${escapeHtml(JSON.stringify(evData, null, 2))}</pre>
+        </details>
+      </div>
+      <div class="agent-error-actions">
+        ${ctaHtml}
+        <button type="button" class="cta-btn agent-error-retry" data-action="retry">Retry</button>
+      </div>`;
+
+    // Wire CTA buttons. "Retry" re-sends the previous user message; the
+    // backend's persistent session may still trip the same error if the
+    // root cause is context length — that's why we also surface
+    // "Start fresh session" for context-limit and request-rejected cases.
+    card.querySelector(".agent-error-retry")?.addEventListener("click", () => {
+      const lastUser = [...chatLog.querySelectorAll(".chat-msg.user")].pop();
+      const text = lastUser?.textContent?.trim();
+      if (!text) return;
+      const ci = document.getElementById("chat-input");
+      if (ci) { ci.value = text; chatForm?.requestSubmit?.(); }
+    });
+    card.querySelector(".agent-error-cta")?.addEventListener("click", (e) => {
+      const action = e.currentTarget.dataset.action;
+      if (action === "fresh-session") {
+        // Bump the session id and clear chat-log to force a brand-new
+        // ADK session on the next message. Keeps engagement_id but
+        // drops the in-memory PERSISTENT session state.
+        if (typeof chatSessionId !== "undefined") {
+          chatSessionId = `chat-${currentProjectId() || "x"}-${Date.now()}`;
+        }
+        chatLog.innerHTML = "";
+        appendChatMessage("agent", "Started a new chat session. Prior artifacts and decisions are still on disk — you can resume any phase from the Progress page.");
+      }
+    });
+    return card;
   }
 
   // --- Auto-mode state (per engagement, per design step) -----------------
@@ -4039,17 +4191,42 @@
   // ============================================================================
   window.__resolveItem = (eid, itemId, desc) => openResolveItemModal(eid, itemId, desc || "");
   window.__renderPack = async (eid, audience) => {
-    const r = await fetch(`/api/engagements/${encodeURIComponent(eid)}/exports/render`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ audience, format: "html" }),
-    });
-    const d = await r.json();
-    if (d.paths && d.paths[0]) window.open(d.paths[0], "_blank");
+    let r, d;
+    try {
+      r = await fetch(`/api/engagements/${encodeURIComponent(eid)}/exports/render`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audience, format: "html" }),
+      });
+      d = await r.json();
+    } catch (e) {
+      alert(`Render failed: ${e.message}`);
+      return;
+    }
+    // ToolResult(ok=False) returns null .data → endpoint returns null.
+    // Treat null and missing-paths the same — surface a useful error.
+    if (!d || !d.paths || !d.paths[0]) {
+      const detail = d?.error || "no renderer registered or audience pack not available yet";
+      alert(`Couldn't render '${audience}' pack: ${detail}\n\n` +
+            `If SAM was just upgraded, restart SAM so the renderer registers at boot.`);
+      return;
+    }
+    window.open(d.paths[0], "_blank");
   };
   window.__downloadZip = async (eid) => {
-    const r = await fetch(`/api/engagements/${encodeURIComponent(eid)}/exports/zip`);
-    const d = await r.json();
-    if (d.zip_path) window.open(d.zip_path, "_blank");
+    let r, d;
+    try {
+      r = await fetch(`/api/engagements/${encodeURIComponent(eid)}/exports/zip`);
+      d = await r.json();
+    } catch (e) {
+      alert(`Download failed: ${e.message}`);
+      return;
+    }
+    if (!d || !d.zip_path) {
+      const detail = d?.error || "package not assembled yet — run Blueprint first";
+      alert(`Couldn't download package: ${detail}`);
+      return;
+    }
+    window.open(d.zip_path, "_blank");
   };
   window.__logout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });
@@ -4100,15 +4277,43 @@
   // actually drops. The cost of being too aggressive: spurious "Reload"
   // prompts in the middle of a healthy turn. Favor too-generous.
   const _SSE_SILENCE_MS = 240000;
-  function _stampSse() { _lastSseEventAt = Date.now(); }
+  // Soft threshold — when an agent's been quiet for >15s mid-turn but
+  // SSE is still healthy, update the activity bar to "Agent is
+  // thinking…" so the user sees we're still alive. This kicks in when
+  // the LLM is composing a long response between tool calls. Distinct
+  // from the 240s desync recovery — that's "SSE actually dropped".
+  const _SSE_QUIET_MS = 15000;
+  let _quietIndicatorShown = false;
+  function _stampSse() {
+    _lastSseEventAt = Date.now();
+    // Any SSE event clears the "thinking" indicator — pill/tool-call
+    // events will set their own activity-bar text. The user shouldn't
+    // see "Agent is thinking…" lingering after a pill fires.
+    _quietIndicatorShown = false;
+  }
 
   setInterval(() => {
     if (!pendingAgentMsg) return;
     const silentFor = Date.now() - _lastSseEventAt;
+    // Soft path: 15s+ quiet → show "Agent is thinking…" in the bar.
+    if (silentFor >= _SSE_QUIET_MS && silentFor < _SSE_SILENCE_MS && !_quietIndicatorShown) {
+      const ag = chatAgentSelect?.value || "the agent";
+      const secs = Math.floor(silentFor / 1000);
+      setActivityBar(`${ag} is thinking… (${secs}s)`);
+      _quietIndicatorShown = true;
+    }
+    // Continuous update of the elapsed seconds while we're in the
+    // "thinking" window, so the user sees the timer tick.
+    if (silentFor >= _SSE_QUIET_MS && silentFor < _SSE_SILENCE_MS && _quietIndicatorShown) {
+      const ag = chatAgentSelect?.value || "the agent";
+      const secs = Math.floor(silentFor / 1000);
+      setActivityBar(`${ag} is thinking… (${secs}s)`);
+    }
+    // Hard path: 240s+ quiet → SSE channel is presumed dead, render recovery.
     if (silentFor >= _SSE_SILENCE_MS) {
       _renderSseDesyncRecoveryCard();
     }
-  }, 5000);  // check every 5s; render only when silentFor crosses 90s
+  }, 5000);  // check every 5s
 
   // Renders a one-shot recovery card when we detect SSE-channel desync.
   // Removes the stale thinking placeholder, shows a "result missed" card

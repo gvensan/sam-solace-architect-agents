@@ -960,6 +960,48 @@ pre {
   border-radius: 3px;
 }
 
+/* Rich error card — replaces "[error] <msg>" one-liner with categorized info. */
+.chat-msg.agent-error { background: rgba(217,83,79,0.04); border-left: 3px solid #d9534f; padding-left: 0; }
+.agent-error-card { padding: 10px 14px; font-size: 13px; }
+.agent-error-header {
+  display: flex; align-items: center; gap: 10px; margin-bottom: 6px;
+  font-family: 'Space Mono', monospace; font-size: 11px;
+  letter-spacing: 0.04em;
+}
+.agent-error-tag {
+  background: #d9534f; color: #fff;
+  padding: 2px 8px; border-radius: 3px;
+  text-transform: uppercase; font-weight: 600;
+}
+.agent-error-agent { color: var(--muted, #888); }
+.agent-error-explanation { margin: 4px 0; line-height: 1.45; }
+.agent-error-message-from-llm {
+  margin: 6px 0;
+  padding: 6px 10px;
+  background: var(--bg, #fafafa);
+  border-radius: 3px;
+  font-family: 'Space Mono', monospace; font-size: 11.5px;
+  color: var(--muted, #666);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.agent-error-actions-details summary,
+.agent-error-tech-details summary {
+  cursor: pointer; color: var(--primary); font-size: 12px;
+  margin: 6px 0 4px;
+}
+.agent-error-actions-details ul { margin: 4px 0 4px 18px; line-height: 1.5; }
+.agent-error-actions-details code,
+.agent-error-explanation code { font-size: 11.5px; background: var(--bg, #fafafa); padding: 0 4px; border-radius: 3px; }
+.agent-error-tech-details pre {
+  background: var(--bg, #fafafa);
+  padding: 8px; border-radius: 3px;
+  font-size: 11px; overflow-x: auto;
+  max-height: 200px;
+}
+.agent-error-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.agent-error-actions .cta-btn { padding: 4px 10px; font-size: 12px; }
+
 .cta-btn-secondary {
   background: var(--bg); color: var(--primary); border: 1px solid var(--border);
 }
