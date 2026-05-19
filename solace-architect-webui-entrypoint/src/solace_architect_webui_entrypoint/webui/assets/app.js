@@ -2422,6 +2422,7 @@
   function openThinkingBubble() {
     if (pendingAgentMsg) return;
     setActivityBar("Thinking…");
+    _stampSse();  // fresh turn → reset the silence timer baseline
     chatLog.querySelector(".chat-empty")?.remove();
     chatLog.querySelector(".welcome-card")?.remove();
     const wrap = document.createElement("div");
@@ -3118,8 +3119,10 @@
 
   function openSseStream(sessionId) {
     if (chatEventSource) chatEventSource.close();
+    _stampSse();  // fresh stream → reset the silence timer
     chatEventSource = new EventSource(`/api/chat/stream/${encodeURIComponent(sessionId)}`);
     chatEventSource.onmessage = (e) => {
+      _stampSse();   // any SSE message resets the silence timer
       try {
         const ev = JSON.parse(e.data);
         if (ev.type === "TaskStatusUpdateEvent") {
@@ -3309,6 +3312,106 @@
     } catch (e) { /* swallow */ }
   }
   setInterval(pollActiveStep, 2000);
+
+  // Desync detection — based on SSE-stream inactivity, NOT on the
+  // active-step endpoint. Reason: compute_active_step reads
+  // session.active_step from meta/session.yaml, which Discovery and Domain
+  // don't update. So "Idle" in the status bar is unreliable as a "no task
+  // is running" signal — it'd false-positive on every multi-minute turn.
+  //
+  // SSE inactivity is more truthful: as long as the agent is alive, SSE
+  // events flow (status updates, tool traces, tokens, intermediate text).
+  // If we see >SSE_SILENCE_MS of quiet WHILE pendingAgentMsg is set, the
+  // SSE channel has dropped or the task has hung silently — same UX
+  // outcome, render the recovery card with a Reload button.
+  let _lastSseEventAt = Date.now();
+  // 240s (4 min) accommodates legitimately slow turns — Discovery's
+  // brief-write turn ran ~5min today with a 116s LLM-composition quiet
+  // gap, Domain's per-scope artifact turns can be similar. Earlier 90s
+  // would have false-positived on both. The cost of being too generous:
+  // user waits a bit longer before the recovery card appears if SSE
+  // actually drops. The cost of being too aggressive: spurious "Reload"
+  // prompts in the middle of a healthy turn. Favor too-generous.
+  const _SSE_SILENCE_MS = 240000;
+  function _stampSse() { _lastSseEventAt = Date.now(); }
+
+  setInterval(() => {
+    if (!pendingAgentMsg) return;
+    const silentFor = Date.now() - _lastSseEventAt;
+    if (silentFor >= _SSE_SILENCE_MS) {
+      _renderSseDesyncRecoveryCard();
+    }
+  }, 5000);  // check every 5s; render only when silentFor crosses 90s
+
+  // Renders a one-shot recovery card when we detect SSE-channel desync.
+  // Removes the stale thinking placeholder, shows a "result missed" card
+  // with a Reload button, and clears pendingAgentMsg so the user can send
+  // a fresh message without first having to refresh.
+  let _desyncCardShown = false;
+  function _renderSseDesyncRecoveryCard() {
+    if (_desyncCardShown) return;
+    _desyncCardShown = true;
+    if (pendingAgentMsg) {
+      try { pendingAgentMsg.el.remove(); } catch {}
+      pendingAgentMsg = null;
+    }
+    setActivityBar(null);
+    const card = document.createElement("div");
+    card.className = "chat-msg agent agent-empty";
+    card.innerHTML = `
+      <div class="agent-empty-eyebrow">Result not received</div>
+      <p class="agent-empty-body">
+        The agent finished this turn but the WebUI didn't receive the
+        final event — likely an SSE connection drop, a suspended tab,
+        or stale cached JavaScript. The agent's work was saved
+        (decisions, artifacts, status updates) — only the in-chat
+        rendering was lost.
+      </p>
+      <p class="agent-empty-body agent-empty-hint">
+        Click <strong>Reload</strong> to refresh and pick up the latest
+        state from the server.
+      </p>
+      <div class="agent-empty-actions">
+        <button type="button" class="agent-empty-cta">Reload ↻</button>
+      </div>
+    `;
+    card.querySelector(".agent-empty-cta").addEventListener("click", () => {
+      window.location.reload();
+    });
+    chatLog.appendChild(card);
+    chatLog.scrollTop = chatLog.scrollHeight;
+    // Re-arm the one-shot guard once the user navigates away or sends
+    // a new message (covered by finalizeAgentBubble running on the next
+    // turn) so a future desync still surfaces.
+  }
+  // Reset the one-shot guard whenever a turn finalizes normally — fresh
+  // desyncs in future turns should still raise the card.
+  const _origFinalizeForDesync = finalizeAgentBubble;
+  finalizeAgentBubble = function (...args) {
+    _desyncCardShown = false;
+    return _origFinalizeForDesync.apply(this, args);
+  };
+
+  // Belt-and-suspenders: detect outright SSE errors and surface the same
+  // card. EventSource auto-reconnects on transient drops, but if the
+  // browser keeps it CLOSED we'd never get a FinalResponse — same UX
+  // failure mode the poller catches, just faster.
+  function _armSseErrorHandler() {
+    if (!chatEventSource) return;
+    chatEventSource.addEventListener("error", () => {
+      // readyState 2 = CLOSED. readyState 0 = reconnecting (don't panic).
+      setTimeout(() => {
+        if (chatEventSource && chatEventSource.readyState === 2 && pendingAgentMsg) {
+          _renderSseDesyncRecoveryCard();
+        }
+      }, 2000);
+    });
+  }
+  const _origOpenSse = openSseStream;
+  openSseStream = function (sid) {
+    _origOpenSse(sid);
+    _armSseErrorHandler();
+  };
 
   // ============================================================================
   // Helpers
