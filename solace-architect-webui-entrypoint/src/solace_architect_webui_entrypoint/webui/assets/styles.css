@@ -1511,6 +1511,7 @@ pre {
 }
 .export-card-cta { align-self: flex-start; font-size: 12px; padding: 6px 12px; }
 .export-card-cta:disabled { opacity: 0.55; cursor: not-allowed; }
+.export-card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .export-archive {
   display: flex; gap: 16px; padding: 18px 20px; margin: 12px 0 24px;
   border: 1px solid var(--border); border-radius: 10px;

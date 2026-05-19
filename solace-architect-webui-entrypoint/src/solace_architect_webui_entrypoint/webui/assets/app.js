@@ -871,10 +871,16 @@
             ${badge}
           </div>
           <p class="export-card-desc">${escapeHtml(p.desc)}</p>
-          <button class="cta-btn export-card-cta"${ready ? "" : " disabled"}
-                  ${ready ? `onclick="window.__renderPack('${eid}','${p.id}')"` : ""}>
-            ${ready ? "Render HTML →" : "Locked"}
-          </button>
+          <div class="export-card-actions">
+            <button class="cta-btn export-card-cta"${ready ? "" : " disabled"}
+                    ${ready ? `onclick="window.__renderPack('${eid}','${p.id}')"` : ""}>
+              ${ready ? "View HTML →" : "Locked"}
+            </button>
+            <button class="cta-btn cta-btn-secondary export-card-cta"${ready ? "" : " disabled"}
+                    ${ready ? `onclick="window.__downloadPack('${eid}','${p.id}','pdf')"` : ""}>
+              ${ready ? "Download PDF ↓" : ""}
+            </button>
+          </div>
         </div>`;
       }).join("");
 
@@ -4202,16 +4208,51 @@
       alert(`Render failed: ${e.message}`);
       return;
     }
-    // ToolResult(ok=False) returns null .data → endpoint returns null.
-    // Treat null and missing-paths the same — surface a useful error.
-    if (!d || !d.paths || !d.paths[0]) {
+    // Prefer the browser-fetchable URL (served by /exports/raw/<file>) over
+    // the raw filesystem path. Filesystem paths are 404 in the browser.
+    const url = d?.urls?.[0] || null;
+    if (!url) {
       const detail = d?.error || "no renderer registered or audience pack not available yet";
       alert(`Couldn't render '${audience}' pack: ${detail}\n\n` +
             `If SAM was just upgraded, restart SAM so the renderer registers at boot.`);
       return;
     }
-    window.open(d.paths[0], "_blank");
+    window.open(url, "_blank");
   };
+  // Download a specific audience pack in the requested format ("html" or "pdf").
+  // Renders the file first (so it exists on disk), then opens the
+  // /exports/raw/<filename> URL — PDFs trigger the browser's native download.
+  window.__downloadPack = async (eid, audience, format) => {
+    let r, d;
+    try {
+      r = await fetch(`/api/engagements/${encodeURIComponent(eid)}/exports/render`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audience, format }),
+      });
+      d = await r.json();
+    } catch (e) {
+      alert(`Render failed: ${e.message}`);
+      return;
+    }
+    const urls = d?.urls || [];
+    // Prefer the URL ending in the requested extension (.pdf or .html).
+    const ext = format === "pdf" ? ".pdf" : ".html";
+    const url = urls.find(u => u.toLowerCase().endsWith(ext)) || urls[0];
+    if (!url) {
+      const detail = d?.error || "renderer didn't produce the requested format";
+      alert(`Couldn't render '${audience}' as ${format.toUpperCase()}: ${detail}`);
+      return;
+    }
+    // For PDF, force a download via an <a download> click rather than opening.
+    if (format === "pdf") {
+      const a = document.createElement("a");
+      a.href = url; a.download = `${audience}-report.pdf`;
+      document.body.appendChild(a); a.click(); a.remove();
+    } else {
+      window.open(url, "_blank");
+    }
+  };
+
   window.__downloadZip = async (eid) => {
     let r, d;
     try {
@@ -4221,12 +4262,13 @@
       alert(`Download failed: ${e.message}`);
       return;
     }
-    if (!d || !d.zip_path) {
+    const url = d?.zip_url || null;
+    if (!url) {
       const detail = d?.error || "package not assembled yet — run Blueprint first";
       alert(`Couldn't download package: ${detail}`);
       return;
     }
-    window.open(d.zip_path, "_blank");
+    window.open(url, "_blank");
   };
   window.__logout = async () => {
     await fetch("/api/auth/logout", { method: "POST" });

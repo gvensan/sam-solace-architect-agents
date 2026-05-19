@@ -20,6 +20,7 @@ dependencies = [
   "solace-architect-core>=0.1.0,<1.0.0",
   "weasyprint>=60.0",  # PDF rendering
   "jinja2>=3.1",  # HTML templates
+  "markdown>=3.5",  # server-side .md → HTML for audience packs
 ]
 
 [tool.hatch.build.targets.wheel]

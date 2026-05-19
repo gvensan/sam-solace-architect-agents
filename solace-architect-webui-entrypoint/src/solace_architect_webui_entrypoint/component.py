@@ -229,6 +229,21 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                 # Health probes (unauthenticated)
                 self._app.router.add_get("/health",  self._health)
                 self._app.router.add_get("/ready",   self._ready)
+                # Serve rendered export files (audience-pack HTML, package
+                # ZIP, etc.) as raw bytes with correct Content-Type. The
+                # render endpoints return ABSOLUTE filesystem paths from
+                # safe_artifact_path; without this route, clicking a pack
+                # button navigates to that path and the browser hits a 404
+                # ("localhost:9080/Users/.../exports/blueprint.html"). This
+                # route resolves the file under the user-scoped engagement
+                # namespace and serves it via web.FileResponse so the
+                # browser renders it directly. MUST be registered before
+                # API_ROUTES so `/exports/raw/<file>` doesn't get
+                # shadowed by the catch-all API adapter.
+                self._app.router.add_get(
+                    "/api/engagements/{engagement_id}/exports/raw/{filename:.+}",
+                    self._serve_export_file,
+                )
                 # Declarative JSON API routes
                 for method, path, handler in API_ROUTES:
                     self._app.router.add_route(method, path, self._adapt_api_handler(handler))
@@ -386,6 +401,40 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         """Serve the intake form for /intake/new and /intake/edit/{id}."""
         return web.FileResponse(_webui_static_dir() / "intake" / "index.html",
                                 headers={"Cache-Control": "no-store"})
+
+    async def _serve_export_file(self, request: web.Request) -> web.Response:
+        """Serve a rendered export artifact (HTML/PDF/ZIP) as raw bytes.
+
+        Resolves filenames under the active user's engagement namespace via
+        ``safe_artifact_path``. Returns 404 for missing files and 400 for
+        any name that escapes the engagement's storage root.
+        """
+        from solace_architect_core._storage import safe_artifact_path
+        from solace_architect_core._user_context import scoped_user as _scoped_user
+        engagement_id = request.match_info.get("engagement_id", "")
+        filename = request.match_info.get("filename", "")
+        if not engagement_id or not filename:
+            return web.json_response({"error": "engagement_id and filename required"},
+                                     status=400)
+        # Pull user_id from the request session (auth middleware sets it).
+        # Anonymous mode just uses the unscoped path layout.
+        user_id = None
+        try:
+            sess = getattr(request, "session", None) or {}
+            user_id = sess.get("user_id")
+        except Exception:
+            pass
+        try:
+            with _scoped_user(user_id):
+                path = safe_artifact_path(engagement_id, f"exports/{filename}")
+        except (ValueError, OSError) as e:
+            return web.json_response({"error": f"invalid filename: {e}"}, status=400)
+        if not path.exists() or not path.is_file():
+            return web.json_response(
+                {"error": f"exports/{filename} not found — run the renderer first"},
+                status=404,
+            )
+        return web.FileResponse(path, headers={"Cache-Control": "no-store"})
 
     def _adapt_api_handler(self, handler):
         """Wrap a coroutine ``handler(**kwargs)`` as an aiohttp route handler."""

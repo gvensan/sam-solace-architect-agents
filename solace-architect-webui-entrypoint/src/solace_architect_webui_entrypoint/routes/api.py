@@ -608,15 +608,33 @@ async def exports_render(engagement_id: str, audience: str, format: str = "html"
         # it gets null. Common errors: "no renderer registered" (plugin
         # didn't load) and "WeasyPrint not installed" (PDF format request
         # without the PDF dep).
-        return {"error": r.error or "render failed", "paths": []}
-    return r.data
+        return {"error": r.error or "render failed", "paths": [], "urls": []}
+    # Augment the renderer's response with browser-fetchable URLs. The
+    # renderer returns absolute filesystem paths (under safe_artifact_path);
+    # the WebUI's /exports/raw/<filename> route serves those files with the
+    # correct Content-Type. Without this, window.open(filesystem-path) hits
+    # 404 because the browser can't fetch arbitrary disk paths.
+    data = dict(r.data or {})
+    urls: list[str] = []
+    for p in data.get("paths", []) or []:
+        # Each path ends with "exports/<filename>" — take the filename.
+        filename = p.rsplit("/exports/", 1)[-1] if "/exports/" in p else p.rsplit("/", 1)[-1]
+        urls.append(f"/api/engagements/{engagement_id}/exports/raw/{filename}")
+    data["urls"] = urls
+    return data
 
 
 async def exports_zip(engagement_id: str) -> Any:
     r = await blueprint_tools.assemble_zip(engagement_id)
     if not r.ok:
-        return {"error": r.error or "zip assembly failed"}
-    return r.data
+        return {"error": r.error or "zip assembly failed", "zip_url": None}
+    data = dict(r.data or {})
+    # Same path-to-URL translation as exports_render.
+    zip_path = data.get("zip_path") or ""
+    if zip_path:
+        filename = zip_path.rsplit("/exports/", 1)[-1] if "/exports/" in zip_path else zip_path.rsplit("/", 1)[-1]
+        data["zip_url"] = f"/api/engagements/{engagement_id}/exports/raw/{filename}"
+    return data
 
 
 # ----- Feedback -----
