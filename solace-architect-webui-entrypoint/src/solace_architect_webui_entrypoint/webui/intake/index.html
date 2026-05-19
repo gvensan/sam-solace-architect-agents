@@ -735,11 +735,48 @@
 
 <div class="actions">
   <button class="secondary" type="button" onclick="saveDraft()">Save draft</button>
+  <button class="secondary" type="button" onclick="openLoadIntakeModal()" title="Load an existing engagement's intake into this form for review or copy-paste-edit">Load existing…</button>
   <span class="draft-status" id="draft-status"></span>
   <span class="spacer"></span>
   <button class="secondary" type="button" onclick="downloadMD()">Download Markdown</button>
   <button class="secondary" type="button" id="btn-download-yaml" onclick="downloadYAML()">Download YAML</button>
   <button class="primary" type="button" id="btn-submit" style="display:none" onclick="submitToServer()">Submit to architect</button>
+</div>
+
+<!-- Load-existing modal — two ways to populate the form: pick a saved
+     engagement, or upload a JSON / YAML / Markdown file shared by a teammate. -->
+<div id="load-intake-modal" style="display:none; position:fixed; inset:0; background:rgba(15,42,68,0.45); z-index:300; align-items:center; justify-content:center;">
+  <div style="background:var(--surface); border-radius:8px; width:min(560px, 92vw); max-height:85vh; overflow:auto; padding:20px 22px;">
+    <h3 style="margin:0 0 4px; color:var(--primary);">Load an existing intake</h3>
+    <p style="margin:0 0 14px; color:var(--muted); font-size:13px;">Populate this form from a saved engagement or an intake file shared by a teammate.</p>
+
+    <div style="display:flex; flex-direction:column; gap:18px;">
+
+      <section>
+        <div style="font-family:'Space Mono', monospace; font-size:10px; text-transform:uppercase; letter-spacing:1.2px; color:var(--muted); font-weight:700; margin-bottom:8px;">From a saved engagement</div>
+        <div id="load-intake-list" style="display:flex; flex-direction:column; gap:6px; max-height:34vh; overflow:auto;">
+          <div style="color:var(--muted); font-size:13px;">Loading engagements…</div>
+        </div>
+      </section>
+
+      <div style="display:flex; align-items:center; gap:10px; color:var(--muted); font-size:11px;">
+        <div style="flex:1; height:1px; background:var(--border);"></div>
+        <span>OR</span>
+        <div style="flex:1; height:1px; background:var(--border);"></div>
+      </div>
+
+      <section>
+        <div style="font-family:'Space Mono', monospace; font-size:10px; text-transform:uppercase; letter-spacing:1.2px; color:var(--muted); font-weight:700; margin-bottom:8px;">From a file (shared by another user)</div>
+        <p style="margin:0 0 10px; color:var(--muted); font-size:12px; line-height:1.5;">Pick a <code>.json</code>, <code>.yaml</code>, or <code>.md</code> file. JSON and YAML round-trip cleanly; Markdown imports best-effort from the structure "Download Markdown" produces.</p>
+        <input type="file" id="load-intake-file" accept=".json,.yaml,.yml,.md,application/json,text/yaml,text/markdown" style="display:block; width:100%; padding:8px; border:1px dashed var(--border); border-radius:4px; font-size:13px; cursor:pointer; background:var(--bg);" onchange="loadIntakeFromFile(this.files[0])">
+        <div id="load-intake-file-status" style="margin-top:8px; font-size:12px; min-height:16px;"></div>
+      </section>
+    </div>
+
+    <div style="display:flex; justify-content:flex-end; gap:8px; margin-top:18px;">
+      <button class="secondary" type="button" onclick="closeLoadIntakeModal()">Cancel</button>
+    </div>
+  </div>
 </div>
 
 <div id="submit-result" style="display:none; position:fixed; top:80px; right:24px; max-width:380px; background:var(--surface); border:1px solid var(--accent); border-radius:6px; padding:14px 16px; box-shadow:0 4px 16px rgba(0,0,0,0.12); z-index:200;">
@@ -1425,6 +1462,127 @@ async function loadFromServer(engagement_id) {
     console.error('Failed to load intake for edit', e);
     alert('Could not load this project\'s intake. The new-project form is shown instead.');
   }
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+//  Load-existing-intake modal
+// ───────────────────────────────────────────────────────────────────────────
+
+async function openLoadIntakeModal() {
+  const modal = document.getElementById('load-intake-modal');
+  const list = document.getElementById('load-intake-list');
+  modal.style.display = 'flex';
+  list.innerHTML = '<div style="color:var(--muted); font-size:13px;">Loading engagements…</div>';
+  try {
+    // Project list lives at /api/projects (the historical name SAM kept).
+    // Each entry has at least { id, name } — the shape returned by
+    // project_tools.list_projects.
+    const r = await fetch('/api/projects');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const projects = await r.json();
+    if (!Array.isArray(projects) || projects.length === 0) {
+      list.innerHTML = '<div style="color:var(--muted); font-size:13px;">No saved engagements yet — submit your first intake to create one.</div>';
+      return;
+    }
+    list.innerHTML = '';
+    for (const p of projects) {
+      const row = document.createElement('button');
+      row.type = 'button';
+      row.className = 'secondary';
+      row.style.cssText = 'width:100%; text-align:left; padding:10px 12px; display:flex; flex-direction:column; align-items:flex-start; gap:2px;';
+      row.innerHTML = `<span style="font-weight:600; color:var(--text);">${esc(p.name || p.id)}</span>` +
+                      `<span style="font-size:11px; font-family:'Space Mono', monospace; color:var(--muted);">${esc(p.id)}</span>`;
+      row.addEventListener('click', () => loadIntakeFromEngagement(p.id));
+      list.appendChild(row);
+    }
+  } catch (e) {
+    list.innerHTML = `<div style="color:var(--error); font-size:13px;">Couldn't load engagements: ${esc(e.message)}</div>`;
+  }
+}
+
+function closeLoadIntakeModal() {
+  document.getElementById('load-intake-modal').style.display = 'none';
+}
+
+async function loadIntakeFromEngagement(eid) {
+  // Use the existing /intake/edit/<eid> route — same server-side load,
+  // and the URL reflects which engagement's intake is currently in the form.
+  // This avoids partial-state bugs where the form is mixed between drafts.
+  window.location.href = '/intake/edit/' + encodeURIComponent(eid);
+}
+
+async function loadIntakeFromFile(file) {
+  const statusEl = document.getElementById('load-intake-file-status');
+  if (!file) return;
+  statusEl.textContent = `Reading ${file.name}…`;
+  statusEl.style.color = 'var(--muted)';
+
+  let text;
+  try {
+    text = await file.text();
+  } catch (e) {
+    statusEl.style.color = 'var(--error)';
+    statusEl.textContent = 'Could not read file: ' + e.message;
+    return;
+  }
+
+  // Dispatch on extension. JSON parses fully client-side; YAML and
+  // Markdown round-trip through the server's parsers so the schema
+  // tolerance + open-item logic stays in one place.
+  const lower = file.name.toLowerCase();
+  let intake = null;
+  try {
+    if (lower.endsWith('.json')) {
+      intake = JSON.parse(text);
+      if (typeof intake !== 'object' || Array.isArray(intake) || !intake) {
+        throw new Error('expected a JSON object at the top level');
+      }
+    } else if (lower.endsWith('.yaml') || lower.endsWith('.yml')) {
+      const r = await fetch('/api/intake/parse-yaml', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ yaml_text: text }),
+      });
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      intake = d.parsed_brief;
+    } else if (lower.endsWith('.md')) {
+      const r = await fetch('/api/intake/parse-markdown', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ markdown_text: text }),
+      });
+      const d = await r.json();
+      if (d.error) throw new Error(d.error);
+      intake = d.parsed_brief;
+    } else {
+      throw new Error(`Unsupported file type "${file.name}". Use .json, .yaml/.yml, or .md.`);
+    }
+  } catch (e) {
+    statusEl.style.color = 'var(--error)';
+    statusEl.textContent = 'Couldn\'t parse: ' + e.message;
+    return;
+  }
+
+  if (!intake || typeof intake !== 'object') {
+    statusEl.style.color = 'var(--error)';
+    statusEl.textContent = 'No intake content found in the file.';
+    return;
+  }
+
+  // Populate the form. loadData() already knows the V1-nested shape we
+  // produce on both /api/intake/parse-yaml and parse-markdown.
+  try {
+    loadData(intake);
+  } catch (e) {
+    statusEl.style.color = 'var(--error)';
+    statusEl.textContent = 'Could not apply intake to the form: ' + e.message;
+    return;
+  }
+
+  statusEl.style.color = 'var(--accent-dark)';
+  statusEl.textContent = `Loaded ${file.name}. Review and adjust the form before submitting.`;
+  // Auto-close the modal after a brief confirmation so the user sees
+  // the populated form, not the dialog.
+  setTimeout(closeLoadIntakeModal, 900);
 }
 
 document.addEventListener('DOMContentLoaded', init);

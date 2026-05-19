@@ -9,7 +9,7 @@ All routes apply ``Cache-Control: no-store`` per v2spec Decision 52.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from datetime import datetime, timezone
 
@@ -496,12 +496,183 @@ async def intake_parse_yaml(yaml_text: str) -> Any:
             pass
 
 
+async def intake_parse_markdown(markdown_text: str) -> Any:
+    """Parse an intake Markdown document (as produced by _intake_to_markdown
+    or the frontend's downloadMD) back into a structured intake dict.
+
+    The Markdown structure is predictable — we author it ourselves with
+    fixed section headers, ``**Key:** Value`` lines, and tables for
+    systems/events. This parser is intentionally permissive: missing
+    sections are fine, extra prose between headers is tolerated, and any
+    line that can't be matched is skipped silently. The output shape
+    matches the V1-nested layout intake.json uses, so callers can pass
+    the result straight to the form's loadData().
+    """
+    import re
+
+    out: dict[str, Any] = {
+        "project": {},
+        "landscape": {"systems": [], "events": [], "protocols_in_use": []},
+        "domain": {},
+        "requirements": {},
+        "scale": {},
+        "goals": {},
+        "preferences": {},
+    }
+
+    # Section → bucket mapping. Keys are section number (1/4/5/6) or the
+    # name SADomainAgent emits in downloadMD. Each section accumulates
+    # ``**Key:** Value`` lines into the named bucket.
+    section_keys = {
+        "1. project": ("project", _project_key_normalize),
+        "2. system landscape": ("landscape", _landscape_key_normalize),
+        "3. domain details": ("domain", None),
+        "4. requirements": ("requirements", _identity_key),
+        "5. goals": ("goals", _identity_key),
+        "6. preferences": ("preferences", _identity_key),
+    }
+
+    current_section: Optional[tuple[str, Any]] = None
+    current_domain_subsection: Optional[str] = None
+    in_table: Optional[str] = None   # "systems" | "events" | None
+    table_columns: list[str] = []
+
+    lines = markdown_text.splitlines()
+    for raw in lines:
+        line = raw.rstrip()
+
+        # H2 — section boundary
+        m_h2 = re.match(r"^##\s+(.+?)\s*$", line)
+        if m_h2:
+            title = m_h2.group(1).strip().lower()
+            current_section = section_keys.get(title)
+            current_domain_subsection = None
+            in_table = None
+            continue
+
+        # H3 — sub-section: systems / events / domain-subgroup
+        m_h3 = re.match(r"^###\s+(.+?)\s*$", line)
+        if m_h3:
+            sub_title = m_h3.group(1).strip().lower()
+            if sub_title == "systems":
+                in_table = "systems"
+                table_columns = []
+                continue
+            if sub_title == "events":
+                in_table = "events"
+                table_columns = []
+                continue
+            if current_section and current_section[0] == "domain":
+                current_domain_subsection = m_h3.group(1).strip()
+                out["domain"].setdefault(current_domain_subsection, {})
+            in_table = in_table  # leave as-is for plain H3 inside other sections
+            continue
+
+        # Table parsing for landscape.systems / landscape.events
+        if in_table and line.startswith("|"):
+            # Skip separator rows like |---|---|
+            if re.match(r"^\|\s*-+\s*(\|\s*-+\s*)+\|?\s*$", line):
+                continue
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            # First non-separator row is the header
+            if not table_columns:
+                table_columns = [c.lower().replace(" ", "_") for c in cells]
+                continue
+            row: dict[str, str] = {}
+            for i, val in enumerate(cells):
+                if i < len(table_columns) and val:
+                    row[table_columns[i]] = val
+            if not row:
+                continue
+            if in_table == "systems":
+                out["landscape"]["systems"].append(row)
+            elif in_table == "events":
+                # Map "payload_size" stays as-is; matches the form schema.
+                out["landscape"]["events"].append(row)
+            continue
+
+        # Empty line: leave in_table state alone — we haven't seen a
+        # non-table line yet, so the table may still be coming. H2/H3
+        # boundaries reset in_table explicitly above; that's the right
+        # cue. Skip blank lines without disturbing state.
+        if not line.strip():
+            continue
+
+        # ``**Key:** Value`` extraction within the current section
+        m_kv = re.match(r"^\*\*([^*:]+?):\*\*\s*(.*)$", line)
+        if m_kv and current_section:
+            key = m_kv.group(1).strip()
+            val = m_kv.group(2).strip()
+            bucket_name, key_norm = current_section
+            if bucket_name == "domain" and current_domain_subsection:
+                out["domain"][current_domain_subsection][key] = val
+                continue
+            if bucket_name == "landscape":
+                # Landscape "**Protocols in use:** A, B, C" → list
+                norm_key = key_norm(key) if key_norm else key
+                if norm_key == "protocols_in_use":
+                    out["landscape"]["protocols_in_use"] = [
+                        v.strip() for v in val.split(",") if v.strip()
+                    ]
+                else:
+                    out["landscape"][norm_key] = val
+                continue
+            if bucket_name == "project":
+                norm_key = key_norm(key) if key_norm else key
+                out["project"][norm_key] = val
+                continue
+            # requirements / goals / preferences — preserve original key
+            out[bucket_name][key] = val
+            continue
+
+    # Strip empty containers so the form's loadData doesn't render empty rows.
+    if not out["landscape"]["systems"]:
+        del out["landscape"]["systems"]
+    if not out["landscape"]["events"]:
+        del out["landscape"]["events"]
+    if not out["landscape"]["protocols_in_use"]:
+        del out["landscape"]["protocols_in_use"]
+    for k in ("project", "domain", "requirements", "scale", "goals", "preferences"):
+        if not out[k]:
+            del out[k]
+    if not out["landscape"]:
+        del out["landscape"]
+
+    return {"parsed_brief": out, "open_items": []}
+
+
+def _project_key_normalize(key: str) -> str:
+    """Translate the human label back to the form's field name."""
+    return {
+        "project name": "name",
+        "project type": "type",
+    }.get(key.lower(), key.lower().replace(" ", "_"))
+
+
+def _landscape_key_normalize(key: str) -> str:
+    return {
+        "existing messaging": "existing_messaging",
+        "protocols in use": "protocols_in_use",
+        "aggregate volumes": "volumes",
+        "schemas": "schemas",
+        "vertical": "vertical",
+    }.get(key.lower(), key.lower().replace(" ", "_"))
+
+
+def _identity_key(key: str) -> str:
+    return key
+
+
 async def intake_submit(**intake) -> Any:
     """Create a project + persist the intake; agent dispatch happens via the SAM runtime.
 
-    Persists TWO artifacts:
+    Persists THREE artifacts:
       - ``discovery/intake.json``  — lossless raw form payload (re-hydratable into the form)
-      - ``discovery/discovery-brief.yaml`` — human-readable, agent-consumable view
+      - ``discovery/discovery-brief.yaml`` — normalized YAML view for downstream agents
+      - ``discovery/intake.md`` — human-readable Markdown for handoff / sharing /
+        printing — same content the "Download Markdown" button on the intake
+        form generates, but server-rendered so it's always derivable from
+        the JSON payload and consistent regardless of client.
 
     Returns: ``{engagement_id, project, open_items}``.
 
@@ -527,6 +698,12 @@ async def intake_submit(**intake) -> Any:
     brief_yaml = yaml.safe_dump(flat, default_flow_style=False, sort_keys=False)
     await artifact_tools.write_artifact(eid, "discovery/discovery-brief.yaml", brief_yaml)
 
+    # 3) Human-readable Markdown — mirrors the structure of the
+    # frontend's downloadMD() so what the user previewed offline matches
+    # what's stored. Useful for hand-off, printing, email attachments.
+    md_content = _intake_to_markdown(intake)
+    await artifact_tools.write_artifact(eid, "discovery/intake.md", md_content)
+
     # Emit open-items for missing required fields (post-normalization).
     open_items = []
     for required in ("project_name", "project_type", "systems", "requirements"):
@@ -540,6 +717,134 @@ async def intake_submit(**intake) -> Any:
             )
 
     return {"engagement_id": eid, "project": p.data, "open_items": open_items}
+
+
+def _intake_to_markdown(intake: dict) -> str:
+    """Render the raw V1-nested intake payload as a Markdown document.
+
+    Mirrors the client-side downloadMD() in webui/intake/index.html so the
+    server-stored discovery/intake.md and the user-downloaded
+    solace-intake.md are identical in structure. Accepts both V1 nested
+    and V2 flat shapes — for flat input, we re-nest into the V1 layout
+    just for the rendering pass (doesn't mutate the caller's data).
+    """
+    import datetime as _dt
+
+    if not isinstance(intake, dict):
+        intake = {}
+
+    # If the payload is flat (V2), re-nest into V1 layout for rendering.
+    if "project" not in intake and ("project_name" in intake or "systems" in intake):
+        nested = {
+            "project": {"name": intake.get("project_name"), "type": intake.get("project_type")},
+            "landscape": {
+                "vertical": intake.get("vertical"),
+                "systems": intake.get("systems") or [],
+                "existing_messaging": intake.get("existing_messaging"),
+                "protocols_in_use": intake.get("protocols") or [],
+                "events": intake.get("events") or [],
+                "volumes": intake.get("aggregate_volumes"),
+                "schemas": intake.get("schemas"),
+            },
+            "domain": intake.get("domain") or {},
+            "requirements": intake.get("requirements") or {},
+            "scale": intake.get("scale") or {},
+            "goals": intake.get("goals") or {},
+            "preferences": intake.get("preferences") or {},
+        }
+    else:
+        nested = intake
+
+    project = nested.get("project") or {}
+    landscape = nested.get("landscape") or {}
+    domain = nested.get("domain") or {}
+    requirements = nested.get("requirements") or {}
+    goals = nested.get("goals") or {}
+    preferences = nested.get("preferences") or {}
+
+    lines: list[str] = []
+    lines.append("# Solace Architect — Intake")
+    lines.append("")
+    lines.append(f"> Generated {_dt.date.today().isoformat()}")
+    lines.append("")
+
+    lines.append("## 1. Project")
+    lines.append("")
+    lines.append(f"**Project name:** {project.get('name') or ''}")
+    lines.append("")
+    lines.append(f"**Project type:** {project.get('type') or ''}")
+    lines.append("")
+
+    lines.append("## 2. System landscape")
+    lines.append("")
+    lines.append("### Systems")
+    lines.append("")
+    lines.append("| Name | Role | Protocol | Owner |")
+    lines.append("|---|---|---|---|")
+    for s in (landscape.get("systems") or []):
+        if not isinstance(s, dict):
+            continue
+        lines.append(
+            f"| {s.get('name', '')} | {s.get('role', '')} | "
+            f"{s.get('protocol', '')} | {s.get('owner', '')} |"
+        )
+    lines.append("")
+    lines.append("### Events")
+    lines.append("")
+    lines.append("| Name | Rate | Delivery | Payload | Payload size |")
+    lines.append("|---|---|---|---|---|")
+    for e in (landscape.get("events") or []):
+        if not isinstance(e, dict):
+            continue
+        lines.append(
+            f"| {e.get('name', '')} | {e.get('rate', '')} | "
+            f"{e.get('delivery', '')} | {e.get('payload', '')} | "
+            f"{e.get('payload_size', '')} |"
+        )
+    lines.append("")
+    lines.append(f"**Existing messaging:** {landscape.get('existing_messaging') or ''}")
+    lines.append("")
+    protocols_in_use = landscape.get("protocols_in_use") or landscape.get("protocols") or []
+    lines.append(f"**Protocols in use:** {', '.join(protocols_in_use) if isinstance(protocols_in_use, list) else protocols_in_use}")
+    lines.append("")
+    lines.append(f"**Aggregate volumes:** {landscape.get('volumes') or landscape.get('aggregate_volumes') or ''}")
+    lines.append("")
+    lines.append(f"**Schemas:** {landscape.get('schemas') or ''}")
+    lines.append("")
+    lines.append(f"**Vertical:** {landscape.get('vertical') or ''}")
+    lines.append("")
+
+    if domain:
+        lines.append("## 3. Domain details")
+        lines.append("")
+        for k, group in domain.items():
+            if not isinstance(group, dict):
+                continue
+            lines.append(f"### {k}")
+            lines.append("")
+            for fk, fv in group.items():
+                lines.append(f"**{fk}:** {fv}")
+                lines.append("")
+
+    lines.append("## 4. Requirements")
+    lines.append("")
+    for k, v in requirements.items():
+        lines.append(f"**{k}:** {v}")
+        lines.append("")
+
+    lines.append("## 5. Goals")
+    lines.append("")
+    for k, v in goals.items():
+        lines.append(f"**{k}:** {v}")
+        lines.append("")
+
+    lines.append("## 6. Preferences")
+    lines.append("")
+    for k, v in preferences.items():
+        lines.append(f"**{k}:** {v}")
+        lines.append("")
+
+    return "\n".join(lines)
 
 
 def _normalize_intake_shape(intake: dict) -> dict:
@@ -705,6 +1010,7 @@ API_ROUTES = [
     ("GET",  "/api/intake/download-markdown",                 intake_download_markdown),
     ("GET",  "/api/intake/autocomplete",                      intake_autocomplete),
     ("POST", "/api/intake/parse-yaml",                        intake_parse_yaml),
+    ("POST", "/api/intake/parse-markdown",                    intake_parse_markdown),
     ("POST", "/api/intake/submit",                            intake_submit),
     ("GET",  "/api/intake/load/{engagement_id}",              intake_load),
     # Exports
