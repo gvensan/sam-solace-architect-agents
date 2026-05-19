@@ -1,22 +1,31 @@
-"""Plugin init/cleanup for SAOrchestratorAgent.
+"""Plugin init / cleanup for SAOrchestratorAgent.
 
-Called by the SAM runtime when the plugin loads. Registers tools from
-``solace-architect-core`` with this agent's runtime, applies the system prompt,
-and wires up the Completion Status Protocol response handler.
-
-Phase 0: stubs.
+Two purposes:
+1. Provide hooks for SAM's ``agent_init_function`` / ``agent_cleanup_function``
+   config keys. Wiring those in config.yaml forces SAM to import the plugin
+   package, which in turn triggers ``__init__.py`` and activates the
+   per-plugin log handler.
+2. Install the SA after_model_callback telemetry patch (idempotent — see
+   solace_architect_core._sam_telemetry_patch).
 """
 
-# TODO(Phase 2): Implement init/cleanup per SAM plugin lifecycle conventions.
-# See https://solacelabs.github.io/solace-agent-mesh/docs/documentation/ for
-# the lifecycle hook signatures.
+from __future__ import annotations
+
+import logging
+
+log = logging.getLogger(__name__)
 
 
 async def init(*args, **kwargs):
-    """Plugin init hook. Phase 0: no-op."""
+    """Plugin init hook — runs once when SAM starts the agent."""
+    from solace_architect_core._sam_telemetry_patch import install as _install_telemetry_patch
+
+    _install_telemetry_patch()
+    log.info("SAOrchestratorAgent lifecycle.init() — plugin package imported, telemetry patch installed")
     return None
 
 
 async def cleanup(*args, **kwargs):
-    """Plugin cleanup hook. Phase 0: no-op."""
+    """Plugin cleanup hook — runs once on agent shutdown."""
+    log.info("SAOrchestratorAgent lifecycle.cleanup()")
     return None

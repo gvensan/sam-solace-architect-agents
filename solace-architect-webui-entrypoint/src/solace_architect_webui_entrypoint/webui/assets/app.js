@@ -2032,8 +2032,25 @@
     return true;
   }
 
+  // Live agent-activity bar: a sticky one-liner above the chat log that
+  // mirrors the latest status text or tool-trace label, so the user can
+  // always see what the agent is doing right now without scrolling
+  // through the bubble. Cleared (and hidden) by finalizeAgentBubble.
+  const chatActivityBar = document.getElementById("chat-activity-bar");
+  function setActivityBar(text) {
+    if (!chatActivityBar) return;
+    if (text) {
+      chatActivityBar.textContent = text;
+      chatActivityBar.classList.remove("hidden");
+    } else {
+      chatActivityBar.textContent = "";
+      chatActivityBar.classList.add("hidden");
+    }
+  }
+
   function appendActivityPill(text) {
     if (!pendingAgentMsg) return;
+    setActivityBar(text);
     // Mark previous pill as done.
     const prev = pendingAgentMsg.pills[pendingAgentMsg.pills.length - 1];
     if (prev) {
@@ -2064,6 +2081,45 @@
       + (keys.length > 3 ? ", …" : "") + ")";
   }
 
+  // Map known tool names to human-readable trace-pill labels, with the
+  // most useful arg woven in. Anything not in this map falls back to
+  // the raw tool name + summarised arg list (the previous behaviour).
+  // Keep labels short — they sit inside a pill row in the chat panel.
+  function friendlyToolLabel(name, args) {
+    args = args || {};
+    const trunc = (s, n = 40) => (s && s.length > n) ? s.slice(0, n - 1) + "…" : (s || "");
+    switch (name) {
+      case "load_preamble":         return "Loading shared guidance";
+      case "load_jargon_list":      return "Loading terminology list";
+      case "load_grounding":        return `Loading docs — ${trunc(args.topic || "?")}`;
+      case "fetch_canonical_source":return `Fetching ${trunc(args.url_or_topic || "?")}`;
+      case "query_integration_hub": return `Checking Integration Hub for ${trunc(args.backend_system || "?")}`;
+      case "record_grounding_gap":  return `Flagging missing grounding (${trunc(args.topic || "?")})`;
+      case "list_projects":         return "Listing projects";
+      case "list_artifacts":        return args.category ? `Listing artifacts (${trunc(args.category)})` : "Listing artifacts";
+      case "read_artifact":         return `Reading ${trunc(args.artifact_name || "artifact")}`;
+      case "write_artifact":        return `Writing ${trunc(args.artifact_name || "artifact")}`;
+      case "record_decision":       return `Recording decision — ${trunc(args.context || "")}`;
+      case "read_decisions":        return "Reading prior decisions";
+      case "record_finding":        return `Recording finding (${trunc(args.severity || "")})`;
+      case "read_findings":         return "Reading findings";
+      case "update_finding_status": return `Updating finding ${trunc(args.finding_id || "")} → ${trunc(args.new_status || "")}`;
+      case "record_open_item":      return `Logging open item (${trunc(args.severity || "")})`;
+      case "read_open_items":       return "Reading open items";
+      case "update_open_item_status":return `Updating open item ${trunc(args.item_id || "")} → ${trunc(args.new_status || "")}`;
+      case "record_feedback":       return "Recording feedback";
+      case "read_feedback":         return "Reading feedback";
+      case "ask_user_question":     return `Preparing question — ${trunc(args.question_id || args.question || "")}`;
+      case "set_step_status":       return `Step ${trunc(args.step || "?")} → ${trunc(args.status || "?")}`;
+      case "get_engagement_status": return "Reading step statuses";
+      case "clear_step_status":     return `Clearing step status — ${trunc(args.step || "?")}`;
+      case "parse_intake_document": return "Parsing intake document";
+      case "export_intake_from_project":return "Exporting intake from project";
+      case "import_source_context": return "Importing source context";
+      default:                      return null;  // null → fall back to raw name + args
+    }
+  }
+
   // tool_invocation_start → add an in-progress trace pill.
   function appendToolTrace(d) {
     if (!pendingAgentMsg) openThinkingBubble();
@@ -2081,8 +2137,21 @@
       + `<span class="tool-call-name"></span>`
       + `<span class="tool-call-args"></span>`
       + `</span>`;
-    pill.querySelector(".tool-call-name").textContent = d.tool_name || "(unknown)";
-    pill.querySelector(".tool-call-args").textContent = summarizeToolArgs(d.tool_args);
+    const friendly = friendlyToolLabel(d.tool_name, d.tool_args);
+    // Mirror into the sticky activity bar so the user sees the current
+    // step without scrolling. Both paths feed it.
+    setActivityBar(friendly || `${d.tool_name || "(tool)"}…`);
+    if (friendly) {
+      // Friendly path — single line, no monospace blob of raw args.
+      pill.querySelector(".tool-call-name").textContent = friendly;
+      pill.querySelector(".tool-call-args").textContent = "";
+      pill.classList.add("tool-call-friendly");
+    } else {
+      // Unknown tool — fall back to raw name + summarised args so we
+      // still show something useful for tools we haven't labelled yet.
+      pill.querySelector(".tool-call-name").textContent = d.tool_name || "(unknown)";
+      pill.querySelector(".tool-call-args").textContent = summarizeToolArgs(d.tool_args);
+    }
     pendingAgentMsg.pillsContainer.appendChild(pill);
     const entry = { el: pill, text: d.tool_name || "(unknown)", fnCallId: d.function_call_id };
     pendingAgentMsg.pills.push(entry);
@@ -2315,6 +2384,7 @@
   // (or, failing that, in finalizeAgentBubble).
   function openThinkingBubble() {
     if (pendingAgentMsg) return;
+    setActivityBar("Thinking…");
     chatLog.querySelector(".chat-empty")?.remove();
     chatLog.querySelector(".welcome-card")?.remove();
     const wrap = document.createElement("div");
@@ -2512,6 +2582,27 @@
     // events this turn. Deferred to here so they sit AFTER the agent's final
     // text instead of interrupting the stream.
     _drainPendingPhaseHandoffs();
+
+    // Turn is done — hide the sticky activity bar until the next turn opens.
+    setActivityBar(null);
+  }
+
+  // Normalize the question-card counter. The agent sometimes emits
+  // self-defeating values like "Q1 of ~1 for topic-design" — the
+  // "of ~1" carries no information (it claims there's exactly one
+  // question while we're on it). Detect and trim such patterns; if
+  // nothing meaningful remains, return null so the counter is omitted.
+  function sanitizeCounter(s) {
+    if (!s || typeof s !== "string") return null;
+    let t = s.trim();
+    if (!t) return null;
+    // Strip "of ~0" / "of ~1" / "of 0" / "of 1" — meaningless totals.
+    t = t.replace(/\s+of\s+~?\s*[01]\b/i, "").trim();
+    // Strip "of ~<m>" when current >= m (e.g., "Q3 of ~2"). Likely an
+    // LLM estimation error; better to show just the current index.
+    t = t.replace(/Q(\d+)\s+of\s+~?\s*(\d+)/i, (m, cur, tot) =>
+      parseInt(cur, 10) >= parseInt(tot, 10) ? `Q${cur}` : m);
+    return t || null;
   }
 
   // Build an interactive form card for one question schema. Submits the
@@ -2530,10 +2621,11 @@
     badge.className = `question-badge ${schema.severity || "blocking"}`;
     badge.textContent = (schema.severity || "blocking").toUpperCase();
     header.appendChild(badge);
-    if (schema.counter) {
+    const counterText = sanitizeCounter(schema.counter);
+    if (counterText) {
       const counter = document.createElement("span");
       counter.className = "question-counter";
-      counter.textContent = schema.counter;
+      counter.textContent = counterText;
       header.appendChild(counter);
     }
     card.appendChild(header);

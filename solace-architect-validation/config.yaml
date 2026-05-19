@@ -1,64 +1,160 @@
-# SAValidationAgent — SAM agent component config.
+# SAValidationAgent — SAM agent component config (apps: form, converted 2026-05-19).
+#
+# Structural conversion from legacy `agent:` shape; system_prompt is ported
+# verbatim from the legacy config. Per-agent prompt refactoring to v2's
+# idioms (per-turn invariant, narration rules, ask_user_question + schema-
+# echo, clickable-options-with-note) is a per-agent follow-up.
 
-agent:
-  name: SAValidationAgent
-  description: >
-    Validation agent.
+log:
+  stdout_log_level: INFO
+  log_file_level: DEBUG
+  log_file: sa-validation.log
 
-  agent_card:
-    description: >
-      Validation agent.
-    defaultInputModes: ["text/plain", "application/json"]
-    defaultOutputModes: ["text/plain", "application/json"]
-    skills:
-      - id: consistency_check
-        name: Consistency Check
-        description: Validation agent
+shared_config:
+  - broker_connection: &broker_connection
+      dev_mode: ${SOLACE_DEV_MODE, false}
+      broker_url: ${SOLACE_BROKER_URL, ws://localhost:8080}
+      broker_username: ${SOLACE_BROKER_USERNAME, default}
+      broker_password: ${SOLACE_BROKER_PASSWORD, default}
+      broker_vpn: ${SOLACE_BROKER_VPN, default}
+      temporary_queue: ${USE_TEMPORARY_QUEUES, true}
 
-  tools:
-    - tool_type: python
-      component_module: "solace_architect_core.tools.artifact_tools"
-      function_name: "read_artifact"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.artifact_tools"
-      function_name: "list_artifacts"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.artifact_tools"
-      function_name: "write_artifact"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.decision_tools"
-      function_name: "read_decisions"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.decision_tools"
-      function_name: "read_findings"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.decision_tools"
-      function_name: "read_open_items"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.decision_tools"
-      function_name: "record_open_item"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.validation_tools"
-      function_name: "trace_requirements"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.grounding_tools"
-      function_name: "load_grounding"
+  - models:
+      general: &general_model
+        model: ${LLM_SERVICE_GENERAL_MODEL_NAME}
+        api_base: ${LLM_SERVICE_ENDPOINT}
+        api_key: ${LLM_SERVICE_API_KEY}
 
-  system_prompt: |
-    You are **SAValidationAgent** — the gating validator.
+  - services:
+      session_service: &default_session_service
+        type: "memory"
+        default_behavior: "PERSISTENT"
 
-    ## Steps
-    1. List all design artifacts via list_artifacts.
-    2. trace_requirements(discovery_brief, artifact_names) → matrix + unaddressed list.
-    3. For each unaddressed requirement → record_open_item(severity="blocking", source="validation").
-    4. load_grounding("antipatterns") and scan every artifact for matches.
-    5. read_findings(status="deferred") and include in validation/validation-report.yaml.
-    6. Naming-convention compliance scan (forbidden terms).
+      artifact_service: &default_artifact_service
+        type: "filesystem"
+        base_path: ${SA_STORAGE_ROOT, /tmp/sa-artifacts}
+        artifact_scope: namespace
 
-    ## Output
-    validation/validation-report.yaml — structured: pass/fail, consistency, antipattern matches,
-    requirement tracing matrix, deferred findings list, terminology compliance.
+apps:
+  - name: sa-validation-app
+    app_base_path: .
+    app_module: solace_agent_mesh.agent.sac.app
+    broker:
+      <<: *broker_connection
 
-    ## Pass gate
-    The blueprint phase MUST NOT run until validation returns DONE (or DONE_WITH_CONCERNS with
-    explicit user override on each blocking open-item).
+    app_config:
+      namespace: ${NAMESPACE}
+      supports_streaming: true
+      agent_name: "SAValidationAgent"
+      display_name: "SAValidationAgent"
+      # Opt out of the framework's artifact_management builtin group so the
+      # core's engagement-scoped list_artifacts wins under the same name.
+      auto_inject_artifact_tools: false
+      model_provider:
+        - "planning"
+
+      agent_card_publishing:
+        interval_seconds: 10
+      agent_discovery:
+        enabled: true
+      inter_agent_communication:
+        allow_list: ["*"]
+        deny_list: []
+        request_timeout_seconds: 60
+
+      # Forcing the plugin package to import on agent boot — activates the
+      # per-plugin log handler AND installs the after_model_callback
+      # telemetry patch (idempotent across agents in the same process).
+      agent_init_function:
+        module: solace_architect_validation.lifecycle
+        name: init
+      agent_cleanup_function:
+        module: solace_architect_validation.lifecycle
+        name: cleanup
+
+      instruction: |
+        You are **SAValidationAgent** — the gating validator.
+
+        ## Steps
+        1. List all design artifacts via list_artifacts.
+        2. trace_requirements(discovery_brief, artifact_names) → matrix + unaddressed list.
+        3. For each unaddressed requirement → record_open_item(severity="blocking", source="validation").
+        4. load_grounding("antipatterns") and scan every artifact for matches.
+        5. read_findings(status="deferred") and include in validation/validation-report.yaml.
+        6. Naming-convention compliance scan (forbidden terms).
+
+        ## Output
+        validation/validation-report.yaml — structured: pass/fail, consistency, antipattern matches,
+        requirement tracing matrix, deferred findings list, terminology compliance.
+
+        ## Pass gate
+        The blueprint phase MUST NOT run until validation returns DONE (or DONE_WITH_CONCERNS with
+        explicit user override on each blocking open-item).
+
+      tools:
+        - tool_type: python
+          component_module: "solace_architect_core.tools.artifact_tools"
+          function_name: "read_artifact"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.artifact_tools"
+          function_name: "list_artifacts"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.artifact_tools"
+          function_name: "write_artifact"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.decision_tools"
+          function_name: "read_decisions"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.decision_tools"
+          function_name: "read_findings"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.decision_tools"
+          function_name: "read_open_items"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.decision_tools"
+          function_name: "record_open_item"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.validation_tools"
+          function_name: "trace_requirements"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "load_grounding"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "load_preamble"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "load_jargon_list"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "record_grounding_gap"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.decision_tools"
+          function_name: "record_feedback"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.interaction_tools"
+          function_name: "ask_user_question"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.lifecycle_tools"
+          function_name: "set_step_status"
+
+      session_service: *default_session_service
+      artifact_service: *default_artifact_service
+      artifact_handling_mode: "embed"
+      enable_embed_resolution: true
+      enable_artifact_content_instruction: true
+
+      agent_card:
+        description: 'Validation agent.
+
+          '
+        defaultInputModes:
+        - text/plain
+        - application/json
+        defaultOutputModes:
+        - text/plain
+        - application/json
+        skills:
+        - id: consistency_check
+          name: Consistency Check
+          description: Validation agent

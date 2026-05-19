@@ -1139,6 +1139,22 @@ pre {
   font-size: 12px;
 }
 .chat-lifecycle-bar.hidden { display: none; }
+
+.chat-activity-bar {
+  padding: 6px 12px;
+  background: rgba(0,200,149,0.08);
+  border-bottom: 1px solid rgba(0,200,149,0.3);
+  font-size: 12px; color: var(--primary);
+  font-style: italic;
+  display: flex; align-items: center; gap: 8px;
+}
+.chat-activity-bar.hidden { display: none; }
+.chat-activity-bar::before {
+  content: "";
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent, #00C895);
+  animation: thinking-bounce 1.2s ease-in-out infinite;
+}
 .chat-lifecycle-dot {
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--muted, #888);
@@ -1210,6 +1226,11 @@ pre {
 .activity-pill.tool-call { font-family: 'Space Mono', monospace; font-size: 11px; }
 .activity-pill.tool-call .tool-call-name { font-weight: 600; }
 .activity-pill.tool-call .tool-call-args { color: var(--muted, #888); margin-left: 4px; }
+/* Friendly-label tool pills use the regular UI font (not mono) so the
+   human-readable label reads cleanly; the monospace look stays for the
+   raw-args fallback when a tool isn't in the friendly-label map. */
+.activity-pill.tool-call.tool-call-friendly { font-family: inherit; font-size: 12px; }
+.activity-pill.tool-call.tool-call-friendly .tool-call-name { font-weight: 500; }
 
 .chat-msg.phase-handoff {
   align-self: stretch;

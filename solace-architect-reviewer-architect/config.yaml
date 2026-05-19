@@ -1,58 +1,154 @@
-# SAArchitectReviewerAgent — SAM agent component config.
+# SAArchitectReviewerAgent — SAM agent component config (apps: form, converted 2026-05-19).
+#
+# Structural conversion from legacy `agent:` shape; system_prompt is ported
+# verbatim from the legacy config. Per-agent prompt refactoring to v2's
+# idioms (per-turn invariant, narration rules, ask_user_question + schema-
+# echo, clickable-options-with-note) is a per-agent follow-up.
 
-agent:
-  name: SAArchitectReviewerAgent
-  description: >
-    Architecture-perspective reviewer.
+log:
+  stdout_log_level: INFO
+  log_file_level: DEBUG
+  log_file: sa-reviewer-architect.log
 
-  agent_card:
-    description: >
-      Architecture-perspective reviewer.
-    defaultInputModes: ["text/plain", "application/json"]
-    defaultOutputModes: ["text/plain", "application/json"]
-    skills:
-      - id: review_architect
-        name: Architect Review
-        description: Architecture-perspective reviewer
+shared_config:
+  - broker_connection: &broker_connection
+      dev_mode: ${SOLACE_DEV_MODE, false}
+      broker_url: ${SOLACE_BROKER_URL, ws://localhost:8080}
+      broker_username: ${SOLACE_BROKER_USERNAME, default}
+      broker_password: ${SOLACE_BROKER_PASSWORD, default}
+      broker_vpn: ${SOLACE_BROKER_VPN, default}
+      temporary_queue: ${USE_TEMPORARY_QUEUES, true}
 
-  tools:
-    - tool_type: python
-      component_module: "solace_architect_core.tools.artifact_tools"
-      function_name: "read_artifact"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.artifact_tools"
-      function_name: "list_artifacts"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.decision_tools"
-      function_name: "record_finding"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.decision_tools"
-      function_name: "read_decisions"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.grounding_tools"
-      function_name: "load_grounding"
-    - tool_type: python
-      component_module: "solace_architect_core.tools.grounding_tools"
-      function_name: "fetch_canonical_source"
+  - models:
+      general: &general_model
+        model: ${LLM_SERVICE_GENERAL_MODEL_NAME}
+        api_base: ${LLM_SERVICE_ENDPOINT}
+        api_key: ${LLM_SERVICE_API_KEY}
 
-  system_prompt: |
-    You are the **Architecture-perspective reviewer**. Read all design artifacts and evaluate
-    architectural soundness.
+  - services:
+      session_service: &default_session_service
+        type: "memory"
+        default_behavior: "PERSISTENT"
 
-    ## Rubric (apply to every design artifact)
-    1. Does the component choice match the requirements?
-    2. Are there simpler alternatives that meet the same requirements?
-    3. Are trade-offs explicitly framed with criteria for choosing?
-    4. Does the design align with the matched reference architecture pattern?
-    5. Are cross-cutting concerns (security, observability, governance) addressed?
+      artifact_service: &default_artifact_service
+        type: "filesystem"
+        base_path: ${SA_STORAGE_ROOT, /tmp/sa-artifacts}
+        artifact_scope: namespace
 
-    ## Grounding
-    Load reference-architectures (for pattern alignment), platform reference (for component
-    verification), antipatterns (architecture category).
+apps:
+  - name: sa-reviewer-architect-app
+    app_base_path: .
+    app_module: solace_agent_mesh.agent.sac.app
+    broker:
+      <<: *broker_connection
 
-    ## Output
-    reviews/architect-review.yaml — list of findings (id, severity, description, affected_artifact, recommendation).
+    app_config:
+      namespace: ${NAMESPACE}
+      supports_streaming: true
+      agent_name: "SAArchitectReviewerAgent"
+      display_name: "SAArchitectReviewerAgent"
+      # Opt out of the framework's artifact_management builtin group so the
+      # core's engagement-scoped list_artifacts wins under the same name.
+      auto_inject_artifact_tools: false
+      model_provider:
+        - "planning"
 
-    ## Completion Status Protocol
-    Return DONE / DONE_WITH_CONCERNS / BLOCKED / NEEDS_CONTEXT. If any required design
-    artifact is missing, return BLOCKED.
+      agent_card_publishing:
+        interval_seconds: 10
+      agent_discovery:
+        enabled: true
+      inter_agent_communication:
+        allow_list: ["*"]
+        deny_list: []
+        request_timeout_seconds: 60
+
+      # Forcing the plugin package to import on agent boot — activates the
+      # per-plugin log handler AND installs the after_model_callback
+      # telemetry patch (idempotent across agents in the same process).
+      agent_init_function:
+        module: solace_architect_reviewer_architect.lifecycle
+        name: init
+      agent_cleanup_function:
+        module: solace_architect_reviewer_architect.lifecycle
+        name: cleanup
+
+      instruction: |
+        You are the **Architecture-perspective reviewer**. Read all design artifacts and evaluate
+        architectural soundness.
+
+        ## Rubric (apply to every design artifact)
+        1. Does the component choice match the requirements?
+        2. Are there simpler alternatives that meet the same requirements?
+        3. Are trade-offs explicitly framed with criteria for choosing?
+        4. Does the design align with the matched reference architecture pattern?
+        5. Are cross-cutting concerns (security, observability, governance) addressed?
+
+        ## Grounding
+        Load reference-architectures (for pattern alignment), platform reference (for component
+        verification), antipatterns (architecture category).
+
+        ## Output
+        reviews/architect-review.yaml — list of findings (id, severity, description, affected_artifact, recommendation).
+
+        ## Completion Status Protocol
+        Return DONE / DONE_WITH_CONCERNS / BLOCKED / NEEDS_CONTEXT. If any required design
+        artifact is missing, return BLOCKED.
+
+      tools:
+        - tool_type: python
+          component_module: "solace_architect_core.tools.artifact_tools"
+          function_name: "read_artifact"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.artifact_tools"
+          function_name: "list_artifacts"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.decision_tools"
+          function_name: "record_finding"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.decision_tools"
+          function_name: "read_decisions"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "load_grounding"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "fetch_canonical_source"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "load_preamble"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "load_jargon_list"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.grounding_tools"
+          function_name: "record_grounding_gap"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.decision_tools"
+          function_name: "record_feedback"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.interaction_tools"
+          function_name: "ask_user_question"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.lifecycle_tools"
+          function_name: "set_step_status"
+
+      session_service: *default_session_service
+      artifact_service: *default_artifact_service
+      artifact_handling_mode: "embed"
+      enable_embed_resolution: true
+      enable_artifact_content_instruction: true
+
+      agent_card:
+        description: 'Architecture-perspective reviewer.
+
+          '
+        defaultInputModes:
+        - text/plain
+        - application/json
+        defaultOutputModes:
+        - text/plain
+        - application/json
+        skills:
+        - id: review_architect
+          name: Architect Review
+          description: Architecture-perspective reviewer

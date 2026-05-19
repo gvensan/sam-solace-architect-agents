@@ -1,15 +1,31 @@
-"""Plugin init/cleanup for SAProvisioningAgent.
+"""Plugin init / cleanup for SAProvisioningAgent.
 
-Phase 0: stubs. Phase 1+ wires tools from solace-architect-core, applies the system
-prompt, registers routes (entrypoint plugins).
+Two purposes:
+1. Provide hooks for SAM's ``agent_init_function`` / ``agent_cleanup_function``
+   config keys. Wiring those in config.yaml forces SAM to import the plugin
+   package, which in turn triggers ``__init__.py`` and activates the
+   per-plugin log handler.
+2. Install the SA after_model_callback telemetry patch (idempotent — see
+   solace_architect_core._sam_telemetry_patch).
 """
+
+from __future__ import annotations
+
+import logging
+
+log = logging.getLogger(__name__)
 
 
 async def init(*args, **kwargs):
-    """Plugin init hook. Phase 0: no-op."""
+    """Plugin init hook — runs once when SAM starts the agent."""
+    from solace_architect_core._sam_telemetry_patch import install as _install_telemetry_patch
+
+    _install_telemetry_patch()
+    log.info("SAProvisioningAgent lifecycle.init() — plugin package imported, telemetry patch installed")
     return None
 
 
 async def cleanup(*args, **kwargs):
-    """Plugin cleanup hook. Phase 0: no-op."""
+    """Plugin cleanup hook — runs once on agent shutdown."""
+    log.info("SAProvisioningAgent lifecycle.cleanup()")
     return None

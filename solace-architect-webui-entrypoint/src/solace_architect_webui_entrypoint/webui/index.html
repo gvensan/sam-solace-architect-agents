@@ -119,6 +119,11 @@
            card. Updated by syncLifecycleBar() on visit + every 10s by the
            Progress auto-refresh. -->
       <div id="chat-lifecycle-bar" class="chat-lifecycle-bar hidden" aria-hidden="true"></div>
+      <!-- Live agent-activity bar — visible while an agent turn is in flight,
+           hidden otherwise. Updated by appendActivityPill / appendToolTrace
+           with the latest status so the user can see what's happening at any
+           moment without scrolling the chat log. -->
+      <div id="chat-activity-bar" class="chat-activity-bar hidden" aria-live="polite"></div>
       <div id="chat-log" class="chat-log">
         <div class="chat-empty">
           <p>Conversational interaction with any agent on the SAM mesh.</p>
