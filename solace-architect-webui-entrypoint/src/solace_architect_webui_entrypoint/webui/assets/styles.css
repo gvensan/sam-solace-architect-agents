@@ -850,6 +850,33 @@ pre {
   background: var(--accent, #00C895); color: var(--primary, #0e2a47);
 }
 
+/* Auto-mode advance card — rendered between scopes while Auto loop is armed. */
+.auto-advance-card {
+  background: rgba(0,200,149,0.06);
+  border: 1px solid var(--accent, #00C895);
+  border-radius: 6px;
+  padding: 10px 14px;
+  margin: 6px 0;
+  font-size: 13px;
+}
+.auto-advance-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.auto-advance-icon { font-size: 16px; }
+.auto-advance-title { color: var(--accent, #00C895); letter-spacing: 0.02em; }
+.auto-advance-body p { margin: 2px 0; line-height: 1.4; }
+.auto-advance-body .muted { color: var(--muted, #888); font-size: 12px; }
+.auto-advance-countdown { font-family: 'Space Mono', monospace; font-size: 12px; }
+.auto-advance-secs { color: var(--accent, #00C895); font-weight: 600; }
+.auto-advance-actions {
+  display: flex; gap: 8px; margin-top: 8px;
+}
+.auto-advance-actions .cta-btn { padding: 4px 10px; font-size: 12px; }
+
 .cta-btn-secondary {
   background: var(--bg); color: var(--primary); border: 1px solid var(--border);
 }

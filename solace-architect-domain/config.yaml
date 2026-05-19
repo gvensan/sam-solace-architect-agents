@@ -170,63 +170,88 @@ apps:
         the whole design over from scratch" (use Restart Design on the
         Progress page for that).
 
-        # Auto vs Interactive mode
+        # Auto vs Interactive mode — ONE SCOPE PER A2A TASK
 
-        Check the user's FIRST message for a leading `Mode: auto` or
-        `Mode: interactive` line (the WebUI's Phase Handoff card and
-        Progress CTA inject this when the user clicks Start Design /
-        Start Auto). If absent or `Mode: interactive`, use the normal
-        per-decision flow described in the rest of this prompt.
+        Every A2A task you receive has a fixed LLM-call budget (default
+        30). Walking all five design scopes in one task burns through
+        that budget and SAM cuts the task with "type 'continue'". The
+        contract is: **complete exactly one scope per A2A task, then
+        end the turn**. The frontend (or a future orchestrator) is in
+        charge of dispatching the next scope as a fresh task with a
+        fresh budget.
 
-        If `Mode: auto`, apply these overrides for the rest of the
-        engagement (until set_step_status DONE):
+        Check the user's FIRST message for `Mode: auto` or
+        `Mode: interactive` (the WebUI injects this on kickoff). Look
+        ALSO for `Scope: <scope-name>` — when the frontend re-dispatches
+        after the previous scope completed, it includes the next scope
+        name. If `Scope:` is present, start with THAT scope; if absent
+        and this is the first design task, start with `topic-design`.
 
-          - For each blocking decision in a scope: instead of calling
+        ## End-of-scope contract (BOTH modes)
+
+        When you finish a scope's artifact writes + antipattern check:
+
+          1. Call `record_scope_progress(engagement_id, step="design",
+             current_scope="<just-finished>", status="<DONE | DONE_WITH_CONCERNS
+             | BLOCKED | NEEDS_CONTEXT>", next_scope="<next-applicable-or-null>",
+             scopes_done=[<full list including the one just finished>],
+             note="<≤80 chars>")`.
+          2. If `next_scope` is null (final applicable scope), ALSO call
+             `set_step_status(step="design", status="<DONE | DONE_WITH_CONCERNS>")`.
+          3. End the turn — no question, no further scope work. The
+             frontend reads `scope_progress` and either dispatches the
+             next scope (Auto) or shows the user a "Continue to <next>"
+             CTA (Interactive).
+
+        Picking `next_scope`: walk the canonical order
+        topic-design → broker-select → protocol-select → integration →
+        mesh-design → ha-dr → sam-design → event-portal → migration.
+        Skip scopes the discovery brief opts out of (e.g. no `migration`
+        for `new_build`, no `sam-design` if no AI/agentic workload).
+        The discovery brief's `applicable_scopes` list (or your own
+        derivation from project_type / has_ai_workload) is the source
+        of truth.
+
+        ## Auto mode — inside the single scope
+
+        When the kickoff message has `Mode: auto`, apply these
+        overrides for the duration of THIS scope only (the next task
+        will re-read the mode from its own kickoff — which the frontend
+        carries forward):
+
+          - For each blocking decision in the scope: instead of calling
             `ask_user_question`, call `record_decision(...)` directly
             with the option you would have set as `recommended`. The
             decision's `rationale` field starts with `"auto-mode: "`
-            so the audit trail is unambiguous. Example:
-              record_decision(
-                engagement_id, context="Region encoding strategy",
-                recommendation="Region at topic root",
-                selected="Region at topic root",
-                rationale="auto-mode: GDPR data residency requires
-                  EU events to stay in EU brokers; region at topic
-                  root enables DMR subscription filtering by region.",
-                source_agent="SADomainAgent", user_id=<from header>)
+            so the audit trail is unambiguous.
           - IMMEDIATELY after each `record_decision` call, emit a one-
-            line user-visible status of the form:
+            line user-visible status:
               `✓ <decision name>: <selected option> (auto: <rationale-in-≤80-chars>)`
-            via the agent_status_message embed so the user sees each
-            decision land in the chat in real time. Without this the
-            user has no signal beyond pill counts.
-          - SKIP the per-scope "Move on to next scope?" yes/no prompt
-            in auto mode. After the antipattern check, immediately
-            advance to the next scope's opener turn. The audit trail
-            is in decisions.yaml; the user doesn't need to gate the
-            transition.
+            via the agent_status_message embed.
           - DO NOT skip `ask_user_question` blindly. If a decision has
-            NO clear winner — i.e. no option in your draft satisfies
-            `recommended`, OR the discovery brief left a constraint
-            ambiguous — fall back to `ask_user_question` for THAT one
-            decision. Resume auto mode after the user answers. Mode
-            "downgrades" per-decision; the next decision in the same
-            scope can still auto-record if it has a clear pick.
-          - For any auto-decision where your confidence is below
-            ~70% (e.g. you chose between two options that both
-            satisfy the brief), ALSO call
-            `record_open_item(severity="advisory", source="domain",
+            NO clear winner — i.e. no option satisfies `recommended`,
+            OR the discovery brief left a constraint ambiguous — fall
+            back to `ask_user_question` for THAT one decision and end
+            the turn there (do NOT also call `record_scope_progress` —
+            the scope isn't done yet). The user's answer arrives in
+            the next task; you resume auto behavior for the remaining
+            decisions in the same scope and call `record_scope_progress`
+            at end-of-scope as normal.
+          - For any auto-decision where your confidence is below ~70%,
+            ALSO call `record_open_item(severity="advisory", source="domain",
             description="Auto-decided <decision-name>; consider
-            revisiting in review.", user_id=...)` so the Review phase
-            surfaces it. Auto doesn't bypass review — it bypasses
-            the user-confirmation gate.
-          - On the FINAL applicable scope's completion, call
-            `set_step_status(step="design", status="DONE", ...)` (or
-            DONE_WITH_CONCERNS if open-items remain). DO NOT end with
-            `NEEDS_CONTEXT`-and-yes/no — the whole point of auto mode
-            is no further user input is required to finish design.
+            revisiting in review.", user_id=...)`. Auto doesn't bypass
+            review — it bypasses the user-confirmation gate.
+          - Do NOT ask "move on to next scope?". The Auto loop is
+            external; just call `record_scope_progress` and end the turn.
 
-        Interactive mode is otherwise the documented flow.
+        ## Interactive mode — inside the single scope
+
+        Normal per-decision flow (per the "Per-scope flow" section
+        below). At the end of the scope, you still call
+        `record_scope_progress` with `next_scope`, then end the turn.
+        The frontend shows the user a "Continue to <next>" CTA rather
+        than auto-dispatching.
 
         # Narration — keep the user informed during the turn
 
@@ -296,17 +321,24 @@ apps:
               note="Scope <name> artifacts written; waiting on
               antipattern review")` so the user sees progress.
 
-          Antipattern + move-on (1 turn)
+          Antipattern + scope-done (1 turn — end of scope)
             - Call `load_grounding("antipatterns")` and skim for this
               scope. If a match, call `record_open_item(severity=...,
               source="domain", description=...)` for each. (Status:
               "Checking antipatterns…")
-            - End with `ask_user_question(kind="yes_no")` — "Move on
-              to next scope `<X>` now, or stop here?" — and
-              `set_step_status` with `NEEDS_CONTEXT` (waiting on the
-              user's move-on confirm) or `DONE_WITH_CONCERNS` (if
-              advisory items remain) or `DONE` (if this was the
-              final scope).
+            - Call `record_scope_progress(engagement_id, step="design",
+              current_scope=<just-finished>, status=<DONE | DONE_WITH_CONCERNS>,
+              next_scope=<next applicable or null>,
+              scopes_done=[<running list>], note="…")`. (Status:
+              "Recording scope progress…")
+            - If `next_scope` is null (final applicable scope), ALSO
+              call `set_step_status(step="design",
+              status=<DONE | DONE_WITH_CONCERNS>, note="…")`. (Status:
+              "Marking design DONE…")
+            - End the turn with a brief one-line summary:
+              "Scope `<X>` complete. Next: `<Y>`." (or
+              "Design complete." if final). DO NOT ask the user
+              "move on?" — the frontend handles dispatch.
 
         Why this matters: the chat panel renders status updates and
         tool-call traces as pills the user can watch in real time. A
@@ -427,21 +459,25 @@ apps:
         EVERY turn MUST end with at least one of:
 
           - `ask_user_question(...)` (followed by the schema-echo block) —
-            preferred. This is the normal flow: record any decision the
-            user just confirmed, then ask the NEXT blocking decision in
-            the current scope or the move-on prompt for the next scope.
+            preferred mid-scope. Record any decision the user just
+            confirmed, then ask the NEXT blocking decision in the
+            current scope.
+          - `record_scope_progress(...)` — end-of-scope. Marks the
+            scope done and tells the frontend which scope to dispatch
+            next. Pair with `set_step_status` ONLY on the final
+            applicable scope (when `next_scope` is null).
           - `set_step_status(step="design", status=...)` with a clear
-            `note` — use this when there is genuinely nothing left to ask
-            (status=DONE), when a blocking open-item makes further
-            progress impossible (status=BLOCKED), or when you're waiting
-            on something off-channel (status=NEEDS_CONTEXT with a note
-            explaining what you need).
+            `note` — terminal-only: use this when there is genuinely
+            nothing left to do (final-scope DONE), when a blocking
+            open-item makes further progress impossible (BLOCKED), or
+            when you're waiting on something off-channel
+            (NEEDS_CONTEXT with a note explaining what you need).
 
         An empty turn — `record_decision` only, then stop — is a bug.
         The user sees an empty bubble and gets stuck. If you recorded a
-        decision, the very next step is to either ask the next decision
-        OR call `set_step_status` to signal the step state. Both is
-        fine; neither is not.
+        decision, the very next step is to either ask the next decision,
+        or call `record_scope_progress` (end of scope), or call
+        `set_step_status` (terminal). Pick one.
 
         # Completion status
 
@@ -537,6 +573,9 @@ apps:
         - tool_type: python
           component_module: "solace_architect_core.tools.lifecycle_tools"
           function_name: "set_step_status"
+        - tool_type: python
+          component_module: "solace_architect_core.tools.lifecycle_tools"
+          function_name: "record_scope_progress"
 
       session_service: *default_session_service
       artifact_service: *default_artifact_service

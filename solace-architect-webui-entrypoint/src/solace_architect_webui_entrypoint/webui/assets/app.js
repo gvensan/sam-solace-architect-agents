@@ -1146,6 +1146,7 @@
     });
     startDesignAutoBtn?.addEventListener("click", () => {
       lockBothDesignButtons();
+      setAutoMode(eid, true);
       openChatWith(`Mode: auto\n\n${DESIGN_KICKOFF}`, "SADomainAgent");
     });
     root.querySelector("#restart-discovery-btn")?.addEventListener("click", () =>
@@ -1919,6 +1920,9 @@
         // on the first turn and branches into Auto-mode rules if set.
         const prime = rawPrime ? `Mode: ${mode}\n\n${rawPrime}` : rawPrime;
         const agent = btn.getAttribute("data-agent") || "";
+        // Auto mode arms the per-scope dispatch loop so finalizeAgentBubble
+        // chains scope-N+1 once scope-N marks done.
+        if (mode === "auto") setAutoMode(currentProjectId?.(), true);
         applyChat("open");
         // Switch the chat agent dropdown before priming so the message
         // is dispatched to the right agent (e.g. Discovery → Domain
@@ -2132,11 +2136,40 @@
     }
   }
 
+  // Heuristic: does this look like the continuation of the previous
+  // pill rather than a fresh status? SAM's resolver sometimes flushes
+  // the agent's status text mid-word ("republ" then "ish)"), and each
+  // chunk independently passes isStatusPill — surfacing as two pills
+  // where the second is meaningless on its own. If `text` starts with
+  // a lowercase letter, a closing bracket, or punctuation, treat it
+  // as a continuation of the previous pill.
+  function _looksLikeContinuation(text) {
+    if (!text) return false;
+    const first = text.trimStart().charAt(0);
+    if (!first) return false;
+    // Lowercase letter, closing brace/bracket/paren, or sentence-tail
+    // punctuation → continuation of an unfinished prior pill.
+    return /[a-z\)\]\}\.\,\;\:\!\?…]/.test(first);
+  }
+
   function appendActivityPill(text) {
     if (!pendingAgentMsg) return;
+    // Merge into the previous pill if this fragment looks like a
+    // continuation (mid-word buffer flush). Without this the user sees
+    // pills like "REST for republ" followed by "ish)" — visually broken.
+    const prev = pendingAgentMsg.pills[pendingAgentMsg.pills.length - 1];
+    if (prev && _looksLikeContinuation(text)) {
+      const span = prev.el.querySelector(".activity-pill-text");
+      if (span) {
+        prev.text = (prev.text || "") + text;
+        span.textContent = prev.text;
+      }
+      setActivityBar(prev.text);
+      chatLog.scrollTop = chatLog.scrollHeight;
+      return;
+    }
     setActivityBar(text);
     // Mark previous pill as done.
-    const prev = pendingAgentMsg.pills[pendingAgentMsg.pills.length - 1];
     if (prev) {
       prev.el.classList.remove("in-progress");
       prev.el.classList.add("done");
@@ -2206,6 +2239,14 @@
 
   // tool_invocation_start → add an in-progress trace pill.
   function appendToolTrace(d) {
+    // Skip framework-internal tools — names that start with `_` are
+    // SAM/ADK plumbing (e.g. `_continue_generation` fires when the LLM
+    // hits max tokens and SAM auto-continues; `_notify_artifact_save`
+    // is internal book-keeping). Surfacing these as user-visible pills
+    // is just noise — the user sees "_continue_generation ()" with no
+    // context. Real tools (read_artifact, record_decision, etc.) never
+    // have an underscore prefix.
+    if (d.tool_name && d.tool_name.startsWith("_")) return;
     if (!pendingAgentMsg) openThinkingBubble();
     const prev = pendingAgentMsg.pills[pendingAgentMsg.pills.length - 1];
     if (prev) {
@@ -2372,6 +2413,9 @@
             if (opt) sel.value = cfg.agent;
           }
         }
+        // Auto mode arms the per-scope dispatch loop for the current
+        // engagement; the loop chains scope-N+1 once scope-N marks done.
+        if (mode === "auto") setAutoMode(currentProjectId?.(), true);
         if (cfg.kickoff) {
           const ci = document.getElementById("chat-input");
           if (ci) {
@@ -2696,6 +2740,12 @@
         if (typeof render === "function") render();
       }
     } catch { /* swallow — re-render is best-effort */ }
+
+    // Auto-mode dispatch: if the turn we just finished closed a Design
+    // scope (record_scope_progress with next_scope set) and Auto mode is
+    // still armed for this engagement, render the advancing card and
+    // schedule the next-scope kickoff. No-op when off / not applicable.
+    _maybeAutoAdvance().catch(() => { /* best-effort */ });
   }
 
   // Normalize the question-card counter. The agent sometimes emits
@@ -3268,6 +3318,147 @@
     if (!eid) return;
     try { localStorage.removeItem(_lastAgentKey(eid)); } catch {}
   }
+
+  // --- Auto-mode state (per engagement, per design step) -----------------
+  // The Design step is dispatched as ONE A2A task per scope so each scope
+  // gets its own LLM-call budget (SAM caps at 30 turns per task). In Auto
+  // mode the frontend chains the next scope automatically when the prior
+  // scope finishes DONE / DONE_WITH_CONCERNS. Pause clears the flag; user
+  // can resume by clicking "Continue in chat" which falls back to manual.
+  function _autoModeKey(eid) { return `sa.auto_mode.${eid}`; }
+  function isAutoModeActive(eid) {
+    if (!eid) return false;
+    try { return localStorage.getItem(_autoModeKey(eid)) === "1"; }
+    catch { return false; }
+  }
+  function setAutoMode(eid, active) {
+    if (!eid) return;
+    try {
+      if (active) localStorage.setItem(_autoModeKey(eid), "1");
+      else localStorage.removeItem(_autoModeKey(eid));
+    } catch {}
+  }
+
+  // Per-scope kickoff for Auto-mode advance. Includes the prior scopes_done
+  // list so the agent can skip already-finished work even if the agent's
+  // session was reset (cold restart between scopes).
+  function _buildAutoAdvanceKickoff(nextScope, scopesDone) {
+    const done = (scopesDone || []).join(", ") || "(none)";
+    return `Mode: auto\nScope: ${nextScope}\n\n` +
+      `Continue Design — next scope is \`${nextScope}\`. Scopes already ` +
+      `completed: ${done}. Read prior scope artifacts as needed for ` +
+      `context, then walk this scope's decisions. Call ` +
+      `record_scope_progress at end of scope (with next_scope = the ` +
+      `next applicable scope, or null if this is the final one).`;
+  }
+
+  // Tracks an in-flight auto-advance countdown so "Pause Auto" can cancel it.
+  let _pendingAutoAdvanceTimer = null;
+  function _cancelPendingAutoAdvance() {
+    if (_pendingAutoAdvanceTimer) {
+      clearTimeout(_pendingAutoAdvanceTimer);
+      _pendingAutoAdvanceTimer = null;
+    }
+  }
+
+  // Render the "Auto: advancing to <next> in N…" card. Returns the card el
+  // so the caller can update / remove it. The card has a "Pause Auto" button
+  // that cancels the pending dispatch AND clears the Auto-mode flag so the
+  // remaining scopes stay manual.
+  function renderAutoAdvanceCard(nextScope, scopesDone) {
+    const card = document.createElement("div");
+    card.className = "chat-msg agent auto-advance-card";
+    const doneList = (scopesDone || []).join(", ") || "(none yet)";
+    card.innerHTML = `
+      <div class="auto-advance-header">
+        <span class="auto-advance-icon">⚡</span>
+        <span class="auto-advance-title">Auto mode — advancing</span>
+      </div>
+      <div class="auto-advance-body">
+        <p>Next scope: <strong><code>${escapeHtml(nextScope)}</code></strong></p>
+        <p class="muted">Completed: ${escapeHtml(doneList)}</p>
+        <p class="auto-advance-countdown">Dispatching in <span class="auto-advance-secs">3</span>s…</p>
+      </div>
+      <div class="auto-advance-actions">
+        <button type="button" class="cta-btn cta-btn-secondary auto-advance-pause">Pause Auto</button>
+        <button type="button" class="cta-btn auto-advance-now">Dispatch now</button>
+      </div>`;
+    return card;
+  }
+
+  // Look at the current engagement's lifecycle and, if Auto mode is active
+  // and the just-completed turn marked a scope DONE / DONE_WITH_CONCERNS
+  // with a `next_scope`, schedule a delayed dispatch of the next scope.
+  // Called from finalizeAgentBubble after the turn renders.
+  async function _maybeAutoAdvance() {
+    const eid = currentProjectId?.();
+    if (!eid) return;
+    if (!isAutoModeActive(eid)) return;
+    let lifecycle;
+    try {
+      lifecycle = await fetch(`/api/engagements/${encodeURIComponent(eid)}/lifecycle`)
+        .then(r => r.json());
+    } catch { return; }
+    const sp = lifecycle?.steps?.design?.scope_progress;
+    if (!sp) return;
+    // Final scope done — clear the flag, let the normal phase-handoff card render.
+    if (!sp.next) {
+      setAutoMode(eid, false);
+      return;
+    }
+    // Pause auto-loop on non-clean exits — user takes over.
+    if (sp.status !== "DONE" && sp.status !== "DONE_WITH_CONCERNS") return;
+
+    // Dedup: if we already dispatched this exact scope_progress (same
+    // current+status+updated_at), don't re-fire. Guards against the agent
+    // crashing without writing a fresh scope_progress on the next attempt
+    // — without this, the loop would re-dispatch the SAME next-scope.
+    const fingerprint = `${sp.current}|${sp.status}|${sp.updated_at}`;
+    const dedupKey = `sa.auto_last_dispatched.${eid}`;
+    let lastDispatched = null;
+    try { lastDispatched = localStorage.getItem(dedupKey); } catch {}
+    if (lastDispatched === fingerprint) return;
+
+    // Don't double-render if a prior auto-advance card already on screen.
+    if (chatLog.querySelector(".auto-advance-card")) return;
+
+    const card = renderAutoAdvanceCard(sp.next, sp.done || []);
+    chatLog.appendChild(card);
+    chatLog.scrollTop = chatLog.scrollHeight;
+
+    const dispatch = () => {
+      _cancelPendingAutoAdvance();
+      card.remove();
+      try { localStorage.setItem(dedupKey, fingerprint); } catch {}
+      const ci = document.getElementById("chat-input");
+      if (ci) {
+        ci.value = _buildAutoAdvanceKickoff(sp.next, sp.done || []);
+        chatForm?.requestSubmit?.();
+      }
+    };
+
+    card.querySelector(".auto-advance-pause")?.addEventListener("click", () => {
+      _cancelPendingAutoAdvance();
+      setAutoMode(eid, false);
+      card.querySelector(".auto-advance-body").innerHTML =
+        `<p class="muted">Auto mode paused. Remaining scopes will not dispatch automatically.</p>`;
+      card.querySelector(".auto-advance-actions").innerHTML = "";
+    });
+    card.querySelector(".auto-advance-now")?.addEventListener("click", dispatch);
+
+    // 3s countdown — gives the user a moment to read the prior scope's
+    // summary and decide whether to pause.
+    let secs = 3;
+    const tick = () => {
+      const el = card.querySelector(".auto-advance-secs");
+      if (el) el.textContent = String(secs);
+      if (secs <= 0) { dispatch(); return; }
+      secs -= 1;
+      _pendingAutoAdvanceTimer = setTimeout(tick, 1000);
+    };
+    tick();
+  }
+
   // Pull the responding agent's name from a FinalResponse event payload.
   // SAM attaches it to status.message.metadata.agent_name in
   // _publish_text_as_partial_a2a_status_update. Fall back to whatever the
