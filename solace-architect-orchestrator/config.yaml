@@ -119,15 +119,15 @@ apps:
         line. Reviewers run as separate A2A tasks and do NOT inherit
         that header — so you MUST literally copy the engagement_id
         string into every reviewer's `task_description`. Anywhere this
-        section says `{ENG_ID}` below, substitute the actual
+        section says `<engagement-id>` below, substitute the actual
         engagement_id string (e.g. `realtime-package-delivery-tracking`),
-        not the literal placeholder `{ENG_ID}`.
+        not the literal placeholder `<engagement-id>`.
 
         When the user kicks off Review (typically via a message starting
         with `Phase: review` or `Run Review phase`), do this:
 
         1. **Verify Design is done** — call
-           `read_artifact(engagement_id="{ENG_ID}",
+           `read_artifact(engagement_id="<engagement-id>",
            filename="meta/engagement-status.yaml")`. Parse the YAML; if
            `steps.design.status` isn't `DONE` or `DONE_WITH_CONCERNS`,
            return STATUS: BLOCKED with REASON naming the missing step.
@@ -139,23 +139,23 @@ apps:
              - `peer_SASecurityReviewerAgent(task_description=...)`
            Each `task_description` MUST start with the engagement
            header in EXACTLY this shape (substitute the real
-           engagement_id for `{ENG_ID}` — never emit the literal
-           string `{ENG_ID}`). The header is read by the reviewer's
+           engagement_id for `<engagement-id>` — never emit the literal
+           string `<engagement-id>`). The header is read by the reviewer's
            telemetry patch to attribute LLM calls back to this
            engagement:
 
              ```
-             [Active engagement: engagement_id={ENG_ID}]
+             [Active engagement: engagement_id=<engagement-id>]
 
-             Audit the design artifacts for engagement_id={ENG_ID}.
-             Workflow: call list_artifacts(engagement_id="{ENG_ID}"),
-             read_artifact(engagement_id="{ENG_ID}", filename=...) for
+             Audit the design artifacts for engagement_id=<engagement-id>.
+             Workflow: call list_artifacts(engagement_id="<engagement-id>"),
+             read_artifact(engagement_id="<engagement-id>", filename=...) for
              each design md/yaml, apply your 5-criterion rubric, record
-             each issue via record_finding(engagement_id="{ENG_ID}",
+             each issue via record_finding(engagement_id="<engagement-id>",
              severity=..., description=..., affected_artifact=...,
              recommendation=..., source_agent="<your_agent_name>").
              Write your narrative review markdown to
-             write_artifact(engagement_id="{ENG_ID}",
+             write_artifact(engagement_id="<engagement-id>",
              filename="reviews/<your-domain>-review.md", content=...).
              End your final turn with a Completion Status block.
              ```
@@ -163,17 +163,17 @@ apps:
            Make ALL FOUR peer calls before reading any results. They
            run concurrently; each gets its own 30-turn LLM budget.
         3. **Aggregate findings** — once all 4 peer calls return, call
-           `read_findings(engagement_id="{ENG_ID}")` to pull every
+           `read_findings(engagement_id="<engagement-id>")` to pull every
            finding recorded across the 4 reviewers.
         4. **Write `reviews/review-summary.md`** —
-           `write_artifact(engagement_id="{ENG_ID}",
+           `write_artifact(engagement_id="<engagement-id>",
            filename="reviews/review-summary.md", content=...)`. The
            summary should include: total counts by severity, counts
            per source agent (architect/developer/ops/security), a
            "Top concerns" section (5-7 most important findings),
            pointers to each per-reviewer narrative.
         5. **Mark step DONE** — call
-           `set_step_status(engagement_id="{ENG_ID}", step="review",
+           `set_step_status(engagement_id="<engagement-id>", step="review",
            status=<DONE | DONE_WITH_CONCERNS | BLOCKED>, note="<N
            findings: X critical, Y important, Z advisory>",
            agent="SAOrchestratorAgent")`. Rule:
@@ -199,26 +199,26 @@ apps:
         with that exact regex shape. Handle each action:
 
         - **Apply**: dispatch the fix to SADomainAgent via
-          `peer_SADomainAgent(task_description="engagement_id={ENG_ID}.
+          `peer_SADomainAgent(task_description="engagement_id=<engagement-id>.
           Apply finding F<N>. Read the finding via read_findings(...),
           identify the affected_artifact, re-write it per the
           recommendation, then return STATUS: DONE.")`. On SADomain
           returning DONE, call
-          `update_finding_status(engagement_id="{ENG_ID}",
+          `update_finding_status(engagement_id="<engagement-id>",
           finding_id="F<N>", new_status="applied",
           source_agent="SAOrchestratorAgent")`.
         - **Defer**: call
-          `update_finding_status(engagement_id="{ENG_ID}",
+          `update_finding_status(engagement_id="<engagement-id>",
           finding_id="F<N>", new_status="deferred",
           resolution_note="<user-supplied note or 'deferred by user'>",
           source_agent="SAOrchestratorAgent")`. The tool auto-creates
           an open-item via `record_open_item`.
         - **Discuss**: re-delegate to the source reviewer via the
           appropriate peer tool. To find the source: call
-          `read_findings(engagement_id="{ENG_ID}",
+          `read_findings(engagement_id="<engagement-id>",
           status="pending")`, locate the finding by id, read its
           `source_agent`, and dispatch
-          `peer_<source_agent>(task_description="engagement_id={ENG_ID}.
+          `peer_<source_agent>(task_description="engagement_id=<engagement-id>.
           Re-examine finding F<N>. User question: <question>. Respond
           with reasoning; do NOT modify the finding record.")`. On
           response, present back to the user. Do NOT auto-Apply or

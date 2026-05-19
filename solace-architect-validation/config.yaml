@@ -134,7 +134,7 @@ apps:
         1. **Inventory** — `list_artifacts(engagement_id)`.
            (Status: "Inventorying artifacts…")
         2. **Trace requirements** — `trace_requirements(
-           engagement_id="{ENG_ID}",
+           engagement_id="<engagement-id>",
            discovery_brief=<parsed YAML from read_artifact("discovery/discovery-brief.yaml")>,
            artifact_names=<the list from step 1>)`. The tool
            auto-resolves user_id from tool_context — do NOT pass user_id.
