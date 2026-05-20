@@ -337,6 +337,13 @@ body[data-chat="closed"] .chat-panel { display: none; }
 }
 .chat-empty p + p { margin-top: 6px; }
 
+/* Every chat bubble (user, agent, question-card, tool-status, error) must
+   wrap long unbreakable tokens — topic strings like
+   `operations/passengers/passenger/checkedIn/v1` are single words to the
+   layout engine and will otherwise overflow the chat panel. `anywhere` (vs
+   `break-word`) is the right choice in flex containers because it lets
+   children compute a smaller min-content size. */
+.chat-msg, .chat-msg * { overflow-wrap: anywhere; }
 .chat-msg {
   max-width: 90%; padding: 8px 12px; border-radius: 8px;
   font-size: 13px; line-height: 1.5;
@@ -424,7 +431,10 @@ body[data-chat="closed"] .chat-panel { display: none; }
 .question-opt-row:hover { background: var(--bg); }
 .question-opt-row.recommended { border-color: var(--accent); }
 .question-opt-row input { margin-top: 4px; }
-.question-opt-body { flex: 1; font-size: 13px; }
+/* min-width: 0 lets a flex item shrink below the intrinsic min-content
+   width of its children — required for `overflow-wrap` to actually break
+   a long unbreakable token inside the flex layout. */
+.question-opt-body { flex: 1; min-width: 0; font-size: 13px; }
 .question-opt-label { line-height: 1.4; }
 .question-opt-pros, .question-opt-cons { font-size: 11px; margin-top: 2px; color: var(--muted, #888); }
 .question-yesno { display: flex; gap: 8px; }
@@ -1309,6 +1319,23 @@ pre {
 }
 .welcome-action:hover { background: var(--primary); color: var(--accent); }
 .welcome-hint { font-size: 11px; color: var(--muted, #888); margin: 0; }
+
+/* Manual phase-advance escape hatch. Visually quiet — this is a recovery
+ * affordance, not a primary action. Click goes through a confirm() prompt
+ * before POSTing to /lifecycle/{step}/mark-done. */
+.welcome-override {
+  margin: 6px 0 0; font-size: 11px;
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.welcome-override-hint { color: var(--muted, #888); }
+.welcome-override-btn {
+  background: none; border: none; padding: 0;
+  font-size: 11px; font-family: inherit; font-weight: 500;
+  color: var(--muted, #888); text-decoration: underline;
+  cursor: pointer;
+}
+.welcome-override-btn:hover { color: var(--text); }
+.welcome-override-btn:disabled { opacity: 0.5; cursor: wait; text-decoration: none; }
 
 /* Sticky lifecycle bar — one-line indicator above the chat scroll, always
    visible while a project is active. Updated by refreshLifecycleBar(). */

@@ -161,6 +161,30 @@ async def get_engagement_lifecycle(engagement_id: str) -> Any:
     return (await lifecycle_tools.get_engagement_status(engagement_id)).data
 
 
+async def mark_step_done(engagement_id: str, step: str, status: str = "DONE",
+                        note: str = "Manual override via dashboard") -> Any:
+    """Manual user override for setting a step's lifecycle status.
+
+    Safety net for the regression mode where an agent declares completion
+    in chat but never calls set_step_status. Without this route the user
+    is stranded: dashboard keeps showing the in-progress CTA forever.
+
+    Restricted to the documented status set; ``DONE`` / ``DONE_WITH_CONCERNS``
+    advance to the next phase, ``BLOCKED`` halts it, ``NOT_STARTED`` rewinds.
+    """
+    allowed = {"DONE", "DONE_WITH_CONCERNS", "BLOCKED", "NOT_STARTED"}
+    if status not in allowed:
+        return {"error": f"status must be one of {sorted(allowed)}", "got": status}
+    if status == "NOT_STARTED":
+        # NOT_STARTED is the way to undo a premature mark-done; clear_step_status
+        # is the right tool, not set_step_status(NOT_STARTED).
+        return (await lifecycle_tools.clear_step_status(engagement_id, step)).data
+    return (await lifecycle_tools.set_step_status(
+        engagement_id, step=step, status=status,
+        agent="user-override", note=note,
+    )).data
+
+
 async def reset_discovery(engagement_id: str) -> Any:
     """Hard-reset the discovery step.
 
@@ -1018,6 +1042,9 @@ API_ROUTES = [
     ("GET",  "/api/engagements/{engagement_id}/artifacts",    list_engagement_artifacts),
     ("GET",  "/api/engagements/{engagement_id}/artifacts/{name}", get_artifact),
     ("GET",  "/api/engagements/{engagement_id}/lifecycle",    get_engagement_lifecycle),
+    # Manual override — user-driven mark-done when an agent regressed and
+    # didn't call set_step_status itself. Body: {"status": "DONE", "note": "…"}.
+    ("POST", "/api/engagements/{engagement_id}/lifecycle/{step}/mark-done", mark_step_done),
     ("DELETE","/api/engagements/{engagement_id}/discovery",   reset_discovery),
     ("DELETE","/api/engagements/{engagement_id}/design",      reset_design),
     # Intake

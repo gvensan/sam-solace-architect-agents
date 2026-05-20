@@ -1508,39 +1508,41 @@
       openChatWith("", null));
     startDesignBtn?.addEventListener("click", () => {
       lockBothDesignButtons();
-      openChatWith(`Mode: interactive\n\n${DESIGN_KICKOFF}`, "SADomainAgent");
+      openChatWith(primeKickoff("design", "interactive", DESIGN_KICKOFF), "SADomainAgent");
     });
     startDesignAutoBtn?.addEventListener("click", () => {
       lockBothDesignButtons();
       setAutoMode(eid, true);
-      openChatWith(`Mode: auto\n\n${DESIGN_KICKOFF}`, "SADomainAgent");
+      openChatWith(primeKickoff("design", "auto", DESIGN_KICKOFF), "SADomainAgent");
     });
     // Start Review — same kickoff body as the chat-pane phase-handoff card
     // (PHASE_NEXT.design.kickoff). Routes to SAOrchestratorAgent which fans
-    // out to the 4 reviewer agents via peer_<AgentName>.
+    // out to the 4 reviewer agents via peer_<AgentName>. primeKickoff is a
+    // no-op for non-Mode-branching targets so this stays a single source
+    // of truth across both entry points.
     const REVIEW_KICKOFF = "Phase: review\n\nRun the Review phase. Fan out to peer_SAArchitectReviewerAgent, peer_SADeveloperReviewerAgent, peer_SAOpsReviewerAgent, peer_SASecurityReviewerAgent in this turn. After all four return, read_findings, write reviews/review-summary.md with severity counts + top concerns, then set_step_status(step=\"review\", status=...) per the rule (DONE if zero findings, DONE_WITH_CONCERNS if any finding recorded, BLOCKED if any reviewer returned BLOCKED).";
     startReviewBtn?.addEventListener("click", () =>
-      openChatWith(REVIEW_KICKOFF, "SAOrchestratorAgent"));
+      openChatWith(primeKickoff("review", "interactive", REVIEW_KICKOFF), "SAOrchestratorAgent"));
 
-    // Single-agent phases (validation/event-portal/blueprint) —
-    // direct dispatch to the phase agent. Kickoff bodies match PHASE_NEXT
-    // entries so both entry points (Progress CTA + chat phase-handoff card)
-    // lead to the same conversation.
+    // Single-agent phases (validation/event-portal/blueprint) — direct
+    // dispatch to the phase agent. Routed through primeKickoff so both
+    // entry points (Progress CTA + chat phase-handoff card) produce the
+    // exact same kickoff string for each transition.
     startValidationBtn?.addEventListener("click", () =>
-      openChatWith(PHASE_NEXT.review.kickoff, "SAValidationAgent"));
+      openChatWith(primeKickoff("validation", "interactive", PHASE_NEXT.review.kickoff), "SAValidationAgent"));
 
     // Event Portal (MCP-backed) — Validation's CTA. Auto vs Interactive
     // matters here because each create_* call touches a live tenant;
     // Interactive (default) pauses per layer for confirmation.
     const EP_KICKOFF_BODY = PHASE_NEXT.validation.kickoff;
     startEventPortalBtn?.addEventListener("click", () =>
-      openChatWith(`Mode: interactive\n\n${EP_KICKOFF_BODY}`, "SAEventPortalAgent"));
+      openChatWith(primeKickoff("event-portal", "interactive", EP_KICKOFF_BODY), "SAEventPortalAgent"));
     startEventPortalAutoBtn?.addEventListener("click", () =>
-      openChatWith(`Mode: auto\n\n${EP_KICKOFF_BODY}`, "SAEventPortalAgent"));
+      openChatWith(primeKickoff("event-portal", "auto", EP_KICKOFF_BODY), "SAEventPortalAgent"));
 
     // Blueprint is now the terminal lifecycle step — kickoff lives in PHASE_NEXT["event-portal"].
     startBlueprintBtn?.addEventListener("click", () =>
-      openChatWith(PHASE_NEXT["event-portal"].kickoff, "SABlueprintAgent"));
+      openChatWith(primeKickoff("blueprint", "interactive", PHASE_NEXT["event-portal"].kickoff), "SABlueprintAgent"));
 
     root.querySelector("#restart-discovery-btn")?.addEventListener("click", () =>
       openRestartDiscoveryModal(eid));
@@ -2312,8 +2314,59 @@
                        title="${escapeHtml(action.autoVariant.title || "")}">${escapeHtml(action.autoVariant.label)}</button>`
             : ""}
         </div>` : ""}
+        ${action && action.prime !== undefined && firstUnfinished && firstUnfinished.id !== "intake"
+          ? `<p class="welcome-override">
+               <span class="welcome-override-hint">Agent already said this phase is complete?</span>
+               <button class="welcome-override-btn" data-override-step="${escapeHtml(firstUnfinished.id)}"
+                       data-override-label="${escapeHtml(firstUnfinished.label)}">
+                 Mark ${escapeHtml(firstUnfinished.label)} done →
+               </button>
+             </p>` : ""}
         <p class="welcome-hint">Or just type your question below — the agent has full project context.</p>
       </div>`;
+
+    // Manual phase-advance override — used when an agent has declared
+    // completion in chat but never called set_step_status. Without this
+    // affordance the user is stranded with the same "Continue X" button
+    // forever. POSTs to /api/engagements/{eid}/lifecycle/{step}/mark-done
+    // which is gated by a confirm() so it can't be hit accidentally.
+    chatLog.querySelectorAll(".welcome-override-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const step = btn.getAttribute("data-override-step");
+        const label = btn.getAttribute("data-override-label");
+        const ok = window.confirm(
+          `Mark ${label} as DONE? This advances the dashboard to the next phase ` +
+          `even though the agent didn't record completion itself. Only do this when ` +
+          `you've verified the work actually is complete.`
+        );
+        if (!ok) return;
+        btn.disabled = true;
+        const originalText = btn.textContent;
+        btn.textContent = "Marking…";
+        try {
+          const resp = await fetch(
+            `/api/engagements/${encodeURIComponent(eid)}/lifecycle/${encodeURIComponent(step)}/mark-done`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify({
+                status: "DONE",
+                note: `Manual override via dashboard at ${new Date().toISOString()}`,
+              }),
+            }
+          );
+          if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+          // Reload the welcome card so the next-phase CTA surfaces.
+          // syncChatProjectContext() re-fetches lifecycle and re-renders.
+          if (typeof syncChatProjectContext === "function") syncChatProjectContext();
+        } catch (e) {
+          btn.disabled = false;
+          btn.textContent = originalText;
+          alert(`Failed to mark ${label} done: ${e.message}. Check sam.log.`);
+        }
+      });
+    });
 
     chatLog.querySelectorAll(".welcome-action[data-prime]").forEach(btn => {
       btn.addEventListener("click", () => {
@@ -2329,9 +2382,11 @@
         btn.textContent = originalLabel.replace(/[→⚡]\s*$/,"").trim() + "…";
         const rawPrime = btn.getAttribute("data-prime") || "";
         const mode = btn.getAttribute("data-mode") || "interactive";
-        // Prepend the mode marker as the first line; Domain reads it
-        // on the first turn and branches into Auto-mode rules if set.
-        const prime = rawPrime ? `Mode: ${mode}\n\n${rawPrime}` : rawPrime;
+        // Prepend "Mode: …" only when the target agent actually branches
+        // on it. firstUnfinished.id is the TARGET phase the user is
+        // about to enter; primeKickoff is a no-op for agents that don't
+        // read Mode (Discovery, Review, Validation, Blueprint).
+        const prime = primeKickoff(firstUnfinished?.id, mode, rawPrime);
         const agent = btn.getAttribute("data-agent") || "";
         // Auto mode arms the per-scope dispatch loop so finalizeAgentBubble
         // chains scope-N+1 once scope-N marks done.
@@ -2716,6 +2771,32 @@
   // (downstream) the Progress CTA, so the user sees the same next-action label
   // wherever the system points it out. Keep entries even for phases whose next
   // agent isn't wired yet — we still want to render "complete" cards for them.
+  // Target phases whose receiving agent actually branches on `Mode: interactive`
+  // vs `Mode: auto`. Only two: Design (SADomainAgent) and Event Portal
+  // (SAEventPortalAgent). Every other agent (Review/Validation/Blueprint)
+  // expects "Phase: X" as the first line of the kickoff and would misdetect its
+  // phase if "Mode: …" is prepended above it. Flip carefully when a new agent
+  // learns Mode-branching.
+  const TARGETS_WITH_MODE_KICKOFF = new Set(["design", "event-portal"]);
+
+  // Source-phase → target-phase mapping (mirrors the lifecycle order). Used to
+  // resolve the target from the phase-handoff card, where the local `step`
+  // variable is the SOURCE phase that just completed.
+  const PHASE_NEXT_STEP = {
+    discovery: "design",
+    design: "review",
+    review: "validation",
+    validation: "event-portal",
+    "event-portal": "blueprint",
+  };
+
+  function primeKickoff(targetStep, mode, kickoff) {
+    if (!kickoff) return "";
+    return TARGETS_WITH_MODE_KICKOFF.has(targetStep)
+      ? `Mode: ${mode}\n\n${kickoff}`
+      : kickoff;
+  }
+
   const PHASE_NEXT = {
     discovery: {
       nextLabel: "Design",
@@ -3001,9 +3082,13 @@
         if (cfg.kickoff) {
           const ci = document.getElementById("chat-input");
           if (ci) {
-            // Prepend the mode marker as the first line — Domain's prompt
-            // reads it on the first turn and switches behaviour accordingly.
-            ci.value = `Mode: ${mode}\n\n${cfg.kickoff}`;
+            // Prepend "Mode: …" only when the target agent actually branches
+            // on it (Discovery→Design, Validation→Event Portal). Review,
+            // Validation, and Blueprint check for "Phase: X" on line 1 and
+            // would misdetect their phase if Mode: were prepended.
+            // `step` here is the SOURCE phase that just completed; the
+            // helper keys on TARGET, so convert via PHASE_NEXT_STEP.
+            ci.value = primeKickoff(PHASE_NEXT_STEP[step] || step, mode, cfg.kickoff);
             ci.focus();
             chatForm.requestSubmit?.();
           }
