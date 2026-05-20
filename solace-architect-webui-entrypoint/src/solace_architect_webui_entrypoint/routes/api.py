@@ -368,12 +368,12 @@ async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
     downstream state.
 
     Cascade order matches the lifecycle:
-      discovery → design → review → validation → blueprint → provisioning
+      discovery → design → review → validation → event-portal → blueprint → provisioning
 
     Each step's wipe removes its artifacts, clears its step status, drops
     its telemetry, and supersedes its source-attributed open-items.
     """
-    order = ("discovery", "design", "review", "validation", "blueprint", "provisioning")
+    order = ("discovery", "design", "review", "validation", "event-portal", "blueprint", "provisioning")
     if after_step not in order:
         return {}
     start_idx = order.index(after_step) + 1
@@ -427,6 +427,36 @@ async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
                     superseded += 1
         await lifecycle_tools.clear_step_status(engagement_id, "validation")
         await _clear_step_telemetry(engagement_id, "validation")
+
+    if "event-portal" in to_wipe:
+        # SAEventPortalAgent writes event-portal/* — plan.yaml,
+        # provisioned.yaml, provisioning-report.md, asyncapi/*.yaml.
+        # The design-phase event-portal-model.yaml IS also under this
+        # path, but it's an INPUT to the MCP agent (produced by Design),
+        # so the wipe shouldn't remove it. _unlink_category("event-portal")
+        # would clobber it. Be selective: only wipe MCP-produced files.
+        for art in (await artifact_tools.list_artifacts(engagement_id, category="event-portal")).data or []:
+            # Keep design-phase outputs; drop only MCP/provisioning files.
+            if art.endswith("event-portal-model.yaml"):
+                continue
+            try:
+                p = safe_artifact_path(engagement_id, art)
+                if p.exists():
+                    p.unlink()
+                    removed.append(art)
+            except Exception:
+                pass
+        items_res = await decision_tools.read_open_items(engagement_id, source="event-portal")
+        if items_res.ok and items_res.data:
+            for item in items_res.data:
+                if item.get("status") == "open":
+                    await decision_tools.update_open_item_status(
+                        engagement_id, item_id=item["id"], new_status="superseded",
+                        resolution_note=f"Superseded by {after_step.capitalize()} restart (cascade)",
+                    )
+                    superseded += 1
+        await lifecycle_tools.clear_step_status(engagement_id, "event-portal")
+        await _clear_step_telemetry(engagement_id, "event-portal")
 
     if "blueprint" in to_wipe:
         removed.extend(await _unlink_category(engagement_id, "blueprint"))

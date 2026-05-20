@@ -98,7 +98,7 @@ _AGENT_LABELS = {
     "SASecurityReviewerAgent": "security-review",
     "SAValidationAgent": "validation",
     "SABlueprintAgent": "blueprint",
-    "SAProvisioningAgent": "provisioning",
+    "SAEPProvisioningAgent": "provisioning",
 }
 
 

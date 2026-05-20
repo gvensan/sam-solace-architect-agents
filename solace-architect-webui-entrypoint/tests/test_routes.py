@@ -263,7 +263,8 @@ async def test_reset_discovery_cascades_through_full_lifecycle():
     for step in ("design", "review", "validation", "blueprint", "discovery"):
         assert step not in status_after["steps"], f"{step} not cleared: {status_after['steps']}"
 
-    # Cascade scope covers design through provisioning.
+    # Cascade scope covers design through provisioning, including the
+    # event-portal step inserted between validation and blueprint.
     assert set(result["cascaded_steps"]) == {
-        "design", "review", "validation", "blueprint", "provisioning",
+        "design", "review", "validation", "event-portal", "blueprint", "provisioning",
     }

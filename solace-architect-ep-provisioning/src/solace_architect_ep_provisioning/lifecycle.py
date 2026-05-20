@@ -1,4 +1,4 @@
-"""Plugin init / cleanup for SAProvisioningAgent.
+"""Plugin init / cleanup for SAEPProvisioningAgent.
 
 Two purposes:
 1. Provide hooks for SAM's ``agent_init_function`` / ``agent_cleanup_function``
@@ -21,11 +21,11 @@ def init(*args, **kwargs):
     from solace_architect_core._sam_telemetry_patch import install as _install_telemetry_patch
 
     _install_telemetry_patch()
-    log.info("SAProvisioningAgent lifecycle.init() — plugin package imported, telemetry patch installed")
+    log.info("SAEPProvisioningAgent lifecycle.init() — plugin package imported, telemetry patch installed")
     return None
 
 
 def cleanup(*args, **kwargs):
     """Plugin cleanup hook — runs once on agent shutdown."""
-    log.info("SAProvisioningAgent lifecycle.cleanup()")
+    log.info("SAEPProvisioningAgent lifecycle.cleanup()")
     return None

@@ -499,6 +499,19 @@
           || hasValidationArtifact
         );
 
+        // Event Portal — SAEventPortalAgent (MCP-backed) writes
+        // event-portal/* in lifecycle mode. Slots between Validation and
+        // Blueprint so the live tenant gets populated against the
+        // validated design before the final package is assembled.
+        const eventPortalStatus = lifecycle?.steps?.["event-portal"]?.status || "NOT_STARTED";
+        const eventPortalNote = lifecycle?.steps?.["event-portal"]?.note || "";
+        const eventPortalDone = eventPortalStatus === "DONE" || eventPortalStatus === "DONE_WITH_CONCERNS";
+        const hasEventPortalArtifact = artifacts.some(a => a.startsWith("event-portal/"));
+        const eventPortalInProgress = !eventPortalDone && (
+          (eventPortalStatus !== "NOT_STARTED")
+          || hasEventPortalArtifact
+        );
+
         // Blueprint — SABlueprintAgent writes blueprint/* + exports/engagement-package.zip.
         const blueprintStatus = lifecycle?.steps?.blueprint?.status || "NOT_STARTED";
         const blueprintNote = lifecycle?.steps?.blueprint?.note || "";
@@ -509,7 +522,7 @@
           || hasBlueprintArtifact
         );
 
-        // Provisioning — SAProvisioningAgent writes provisioning/* (opt-in).
+        // Provisioning — SAEPProvisioningAgent writes provisioning/* (opt-in).
         const provisioningStatus = lifecycle?.steps?.provisioning?.status || "NOT_STARTED";
         const provisioningNote = lifecycle?.steps?.provisioning?.note || "";
         const provisioningDone = provisioningStatus === "DONE" || provisioningStatus === "DONE_WITH_CONCERNS";
@@ -519,10 +532,12 @@
           || hasProvisioningArtifact
         );
 
-        // Active step on the lifecycle banner.
+        // Active step on the lifecycle banner. Order matches PHASE_NEXT:
+        // intake → discovery → design → review → validation → event-portal → blueprint → provisioning.
         const activeStepId = provisioningDone ? "complete"
           : (provisioningInProgress || blueprintDone) ? "provisioning"
-          : (blueprintInProgress || validationDone) ? "blueprint"
+          : (blueprintInProgress || eventPortalDone) ? "blueprint"
+          : (eventPortalInProgress || validationDone) ? "event-portal"
           : (validationInProgress || reviewDone) ? "validation"
           : (reviewInProgress || designDone) ? "review"
           : (designInProgress || discoveryDone) ? "design"
@@ -534,6 +549,7 @@
         if (designDone) completedSteps.add("design");
         if (reviewDone) completedSteps.add("review");
         if (validationDone) completedSteps.add("validation");
+        if (eventPortalDone) completedSteps.add("event-portal");
         if (blueprintDone) completedSteps.add("blueprint");
         if (provisioningDone) completedSteps.add("provisioning");
 
@@ -553,6 +569,7 @@
           designStatus, designNote, designDone, designInProgress,
           reviewStatus, reviewNote, reviewDone, reviewInProgress,
           validationStatus, validationNote, validationDone, validationInProgress,
+          eventPortalStatus, eventPortalNote, eventPortalDone, eventPortalInProgress,
           blueprintStatus, blueprintNote, blueprintDone, blueprintInProgress,
           provisioningStatus, provisioningNote, provisioningDone, provisioningInProgress,
           blueprintBlockers,
@@ -968,12 +985,16 @@
   // external icon set. State drives the styling: completed = checkmark
   // tint, active = accent border + glow, pending = muted.
   function renderProgressBanner({ active, completed }) {
+    // Lifecycle steps shown across the top of the Progress view.
+    // Order matches PHASE_NEXT: intake → discovery → design → review →
+    // validation → event-portal → blueprint → provisioning.
     const steps = [
       { id: "intake",       label: "Intake",       svg: "M3 4h18v4H3zM3 12h18v4H3zM3 20h18" },
       { id: "discovery",    label: "Discovery",    svg: "M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm10 2-5-5" },
       { id: "design",       label: "Design",       svg: "M3 3l6 6v12l6-6V3zM3 3l6 6 6-6" },
       { id: "review",       label: "Review",       svg: "M4 4h16v12H4zM4 4l8 6 8-6M8 20h8" },
       { id: "validation",   label: "Validation",   svg: "M5 12l5 5L20 7" },
+      { id: "event-portal", label: "Event Portal", svg: "M4 12a8 8 0 1 0 16 0 8 8 0 0 0-16 0zM12 4v8l5 3" },
       { id: "blueprint",    label: "Blueprint",    svg: "M4 4h16v16H4zM4 9h16M9 4v16" },
       { id: "provisioning", label: "Provisioning", svg: "M12 2v6M12 22v-6M2 12h6M22 12h-6M5 5l4 4M19 19l-4-4M19 5l-4 4M5 19l4-4" },
     ];
@@ -1019,6 +1040,7 @@
     designStatus, designNote, designDone, designInProgress,
     reviewStatus, reviewNote, reviewDone, reviewInProgress,
     validationStatus, validationNote, validationDone, validationInProgress,
+    eventPortalStatus, eventPortalNote, eventPortalDone, eventPortalInProgress,
     blueprintStatus, blueprintNote, blueprintDone, blueprintInProgress,
     provisioningStatus, provisioningNote, provisioningDone, provisioningInProgress,
     blueprintBlockers,
@@ -1090,7 +1112,7 @@
           <div class="progress-cta-body">
             <div class="progress-cta-eyebrow">Provisioning in progress</div>
             <h2>Continue Provisioning in chat</h2>
-            <p>SAProvisioningAgent is creating Event Portal objects.
+            <p>SAEPProvisioningAgent is creating Event Portal objects.
             ${provisioningNote ? `<em>${escapeHtml(provisioningNote)}</em> ` : ""}
             In Interactive mode, the agent pauses between layers for
             Apply / Skip confirmation. Click <strong>Continue in chat →</strong>
@@ -1117,7 +1139,7 @@
             ops runbook, diagrams, and 5 audience packs bundled into
             <code>exports/engagement-package.zip</code>. The engagement
             can end here, or you can opt-in to live Event Portal
-            <strong>Provisioning</strong> — SAProvisioningAgent will
+            <strong>Provisioning</strong> — SAEPProvisioningAgent will
             create EP objects via the EP Designer API (interactive by
             default, with Auto mode if you prefer hands-off).</p>
             <p class="muted" style="border-left: 3px solid var(--accent, #00C895); padding-left: 10px; font-size: 12px;">
@@ -1157,42 +1179,93 @@
         </div>`;
     }
 
-    // Validation DONE — Blueprint is next, gated on blocking open-items.
+    // Event Portal DONE — Blueprint is next.
+    if (eventPortalDone) {
+      const badge = eventPortalStatus === "DONE_WITH_CONCERNS"
+        ? `<span class="status-badge advisory">Done with concerns</span>`
+        : `<span class="status-badge done">Done</span>`;
+      return `
+        <div class="progress-cta done" role="region" aria-label="Event Portal complete">
+          <div class="progress-cta-body">
+            <div class="progress-cta-eyebrow">Event Portal → Blueprint</div>
+            <h2>Event Portal provisioning is complete ${badge}</h2>
+            ${eventPortalNote ? `<p>${escapeHtml(eventPortalNote)}</p>` : ""}
+            <p>The designed application domains, applications, events, schemas,
+            and AsyncAPI specs are now live in your Solace Cloud tenant.
+            Provisioning records are at <code>event-portal/provisioned.yaml</code>;
+            exported AsyncAPI specs are under
+            <code>event-portal/asyncapi/</code>. Next step:
+            <strong>Blueprint</strong> — assemble the deliverable package.</p>
+          </div>
+          <div class="progress-cta-actions progress-cta-actions-row">
+            <button id="start-blueprint-btn" class="cta-btn">Start Blueprint →</button>
+            <a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View event-portal →</a>
+          </div>
+        </div>`;
+    }
+
+    // Event Portal in progress — MCP-backed agent talking to live tenant.
+    if (eventPortalInProgress) {
+      return `
+        <div class="progress-cta in-progress" role="region" aria-label="Event Portal in progress">
+          <div class="progress-cta-body">
+            <div class="progress-cta-eyebrow">Event Portal in progress</div>
+            <h2>Provisioning to Solace Cloud</h2>
+            <p>SAEventPortalAgent is creating Event Portal objects via the
+            MCP server.
+            ${eventPortalNote ? `<em>${escapeHtml(eventPortalNote)}</em> ` : ""}
+            In Interactive mode, the agent pauses between layers for
+            Apply / Skip confirmation. Click <strong>Continue in chat →</strong>
+            to answer the next prompt.</p>
+          </div>
+          <div class="progress-cta-actions progress-cta-actions-row">
+            <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
+          </div>
+        </div>`;
+    }
+
+    // Validation DONE — Event Portal is next, gated on blocking open-items.
     if (validationDone) {
       const badge = validationStatus === "DONE_WITH_CONCERNS"
         ? `<span class="status-badge advisory">Done with concerns</span>`
         : `<span class="status-badge done">Done</span>`;
-      // Gate: SAValidationAgent records blocking open-items with
-      // affecting_step="blueprint". When any are open, the Start
-      // Blueprint button must be disabled — otherwise the user can
-      // bypass validation guardrails when the verdict is
-      // DONE_WITH_CONCERNS.
-      const blockedByOpenItems = blueprintBlockers.length > 0;
+      // Gate: SAValidationAgent records blocking open-items. The gate
+      // applies to whichever step is next. EP slots in between
+      // Validation and Blueprint, so until the Validation prompt is
+      // updated to set affecting_step="event-portal" explicitly, we
+      // reuse the blueprintBlockers collection (validation may still be
+      // tagging items with the old affecting_step="blueprint" value).
+      const epBlockers = blueprintBlockers;
+      const blockedByOpenItems = epBlockers.length > 0;
       const blockerList = blockedByOpenItems
         ? `<div class="progress-blocker-list">
-             <strong>${blueprintBlockers.length} blocking open-item${blueprintBlockers.length === 1 ? "" : "s"} must be resolved first:</strong>
-             <ul>${blueprintBlockers.slice(0, 5).map(i => `<li><code>${escapeHtml(i.id || "?")}</code>: ${escapeHtml(i.description || "")}</li>`).join("")}</ul>
-             ${blueprintBlockers.length > 5 ? `<small>(…and ${blueprintBlockers.length - 5} more — see Open Items)</small>` : ""}
+             <strong>${epBlockers.length} blocking open-item${epBlockers.length === 1 ? "" : "s"} must be resolved first:</strong>
+             <ul>${epBlockers.slice(0, 5).map(i => `<li><code>${escapeHtml(i.id || "?")}</code>: ${escapeHtml(i.description || "")}</li>`).join("")}</ul>
+             ${epBlockers.length > 5 ? `<small>(…and ${epBlockers.length - 5} more — see Open Items)</small>` : ""}
            </div>`
         : "";
-      const blueprintBtnAttrs = blockedByOpenItems
-        ? `disabled title="Resolve the blocking open-items below before Blueprint can run."`
+      const epBtnAttrs = blockedByOpenItems
+        ? `disabled title="Resolve the blocking open-items below before Event Portal can run."`
         : "";
       return `
         <div class="progress-cta done" role="region" aria-label="Validation complete">
           <div class="progress-cta-body">
-            <div class="progress-cta-eyebrow">Validation → Blueprint</div>
+            <div class="progress-cta-eyebrow">Validation → Event Portal</div>
             <h2>Validation is complete ${badge}</h2>
             ${validationNote ? `<p>${escapeHtml(validationNote)}</p>` : ""}
             <p>The design has been audited against requirement coverage,
             antipatterns, consistency, deferred findings, terminology
-            compliance, and schema sanity. Next step: <strong>Blueprint</strong> —
-            SABlueprintAgent assembles the architecture narrative, ops
-            runbook, diagrams, and 5 audience packs into a deliverable ZIP.</p>
+            compliance, and schema sanity. Next step:
+            <strong>Event Portal</strong> — SAEventPortalAgent provisions
+            the designed application domains, applications, events, schemas,
+            and AsyncAPI specs live in your Solace Cloud tenant (Interactive
+            mode pauses per layer; Auto mode runs to completion).</p>
             ${blockerList}
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
-            <button id="start-blueprint-btn" class="cta-btn" ${blueprintBtnAttrs}>Start Blueprint →</button>
+            <button id="start-event-portal-btn" class="cta-btn" data-mode="interactive" ${epBtnAttrs}>Start Event Portal →</button>
+            <button id="start-event-portal-auto-btn" class="cta-btn cta-btn-auto" data-mode="auto" ${epBtnAttrs}
+                    title="Auto mode: provision all layers without per-layer confirmation; first error halts and reports.">Start Auto ⚡</button>
             <a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View validation →</a>
             ${blockedByOpenItems ? `<a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/open-items">View open items →</a>` : ""}
           </div>
@@ -1410,6 +1483,8 @@
     const startDesignAutoBtn = root.querySelector("#start-design-auto-btn");
     const startReviewBtn = root.querySelector("#start-review-btn");
     const startValidationBtn = root.querySelector("#start-validation-btn");
+    const startEventPortalBtn = root.querySelector("#start-event-portal-btn");
+    const startEventPortalAutoBtn = root.querySelector("#start-event-portal-auto-btn");
     const startBlueprintBtn = root.querySelector("#start-blueprint-btn");
     const startProvisioningBtn = root.querySelector("#start-provisioning-btn");
     const startProvisioningAutoBtn = root.querySelector("#start-provisioning-auto-btn");
@@ -1419,6 +1494,8 @@
     lockOnClick(startDesignAutoBtn, "Starting Auto…");
     lockOnClick(startReviewBtn, "Starting Review…");
     lockOnClick(startValidationBtn, "Starting Validation…");
+    lockOnClick(startEventPortalBtn, "Starting Event Portal…");
+    lockOnClick(startEventPortalAutoBtn, "Starting Auto…");
     lockOnClick(startBlueprintBtn, "Starting Blueprint…");
     lockOnClick(startProvisioningBtn, "Starting Provisioning…");
     lockOnClick(startProvisioningAutoBtn, "Starting Auto…");
@@ -1455,19 +1532,31 @@
     startReviewBtn?.addEventListener("click", () =>
       openChatWith(REVIEW_KICKOFF, "SAOrchestratorAgent"));
 
-    // Single-agent phases (validation/blueprint/provisioning) — direct
-    // dispatch to the phase agent. Kickoff bodies match PHASE_NEXT entries
-    // so both entry points (Progress CTA + chat phase-handoff card) lead
-    // to the same conversation.
+    // Single-agent phases (validation/event-portal/blueprint/provisioning) —
+    // direct dispatch to the phase agent. Kickoff bodies match PHASE_NEXT
+    // entries so both entry points (Progress CTA + chat phase-handoff card)
+    // lead to the same conversation.
     startValidationBtn?.addEventListener("click", () =>
       openChatWith(PHASE_NEXT.review.kickoff, "SAValidationAgent"));
+
+    // Event Portal (MCP-backed) — Validation's CTA. Auto vs Interactive
+    // matters here because each create_* call touches a live tenant;
+    // Interactive (default) pauses per layer for confirmation.
+    const EP_KICKOFF_BODY = PHASE_NEXT.validation.kickoff;
+    startEventPortalBtn?.addEventListener("click", () =>
+      openChatWith(`Mode: interactive\n\n${EP_KICKOFF_BODY}`, "SAEventPortalAgent"));
+    startEventPortalAutoBtn?.addEventListener("click", () =>
+      openChatWith(`Mode: auto\n\n${EP_KICKOFF_BODY}`, "SAEventPortalAgent"));
+
+    // Blueprint is now downstream of event-portal — kickoff lives there.
     startBlueprintBtn?.addEventListener("click", () =>
-      openChatWith(PHASE_NEXT.validation.kickoff, "SABlueprintAgent"));
+      openChatWith(PHASE_NEXT["event-portal"].kickoff, "SABlueprintAgent"));
+
     const PROVISIONING_KICKOFF_BODY = PHASE_NEXT.blueprint.kickoff;
     startProvisioningBtn?.addEventListener("click", () =>
-      openChatWith(`Mode: interactive\n\n${PROVISIONING_KICKOFF_BODY}`, "SAProvisioningAgent"));
+      openChatWith(`Mode: interactive\n\n${PROVISIONING_KICKOFF_BODY}`, "SAEPProvisioningAgent"));
     startProvisioningAutoBtn?.addEventListener("click", () =>
-      openChatWith(`Mode: auto\n\n${PROVISIONING_KICKOFF_BODY}`, "SAProvisioningAgent"));
+      openChatWith(`Mode: auto\n\n${PROVISIONING_KICKOFF_BODY}`, "SAEPProvisioningAgent"));
 
     root.querySelector("#restart-discovery-btn")?.addEventListener("click", () =>
       openRestartDiscoveryModal(eid));
@@ -1516,7 +1605,7 @@
         // Backend cascade-wipes the full lifecycle from design through
         // provisioning. Mirror that on the frontend so every downstream
         // phase-handoff card can re-fire cleanly on the next run.
-        ["discovery", "design", "review", "validation", "blueprint", "provisioning"]
+        ["discovery", "design", "review", "validation", "event-portal", "blueprint", "provisioning"]
           .forEach(step => _clearPhaseHint(eid, step));
         setAutoMode(eid, false);
         closeModal();
@@ -1578,7 +1667,7 @@
         // The backend cascade-wipes EVERY downstream phase (review,
         // validation, blueprint, provisioning). Mirror that on the
         // frontend so a re-run can re-fire every handoff card cleanly.
-        ["design", "review", "validation", "blueprint", "provisioning"]
+        ["design", "review", "validation", "event-portal", "blueprint", "provisioning"]
           .forEach(step => _clearPhaseHint(eid, step));
         setAutoMode(eid, false);
         closeModal();
@@ -2660,16 +2749,29 @@
       singleAction: true,
     },
     validation: {
+      nextLabel: "Event Portal",
+      ctaLabel: "Start Event Portal →",
+      agent: "SAEventPortalAgent",
+      // Lifecycle-mode kickoff for the MCP-backed EP agent. Reads
+      // event-portal/event-portal-model.yaml from Design, dry-runs a plan
+      // against the live tenant, optionally confirms per layer, then
+      // creates/reuses domains→schemas→events→applications and exports
+      // AsyncAPI specs. Auto mode skips per-layer confirmations.
+      kickoff: "Phase: event-portal\n\nRun the Event Portal provisioning phase. Pre-flight (read event-portal/event-portal-model.yaml + verify_tenant_access), dry-run plan, then per-layer creation [domains → schemas → events → applications] with reuse-by-content-match. Export AsyncAPI per provisioned application. Call set_step_status(step=\"event-portal\", ...) per the rule.",
+      // Two-button CTA so the user can pick Auto (no per-layer prompts)
+      // vs Interactive (default, safer for live infrastructure).
+    },
+    "event-portal": {
       nextLabel: "Blueprint",
       ctaLabel: "Start Blueprint →",
       agent: "SABlueprintAgent",
-      kickoff: "Phase: blueprint\n\nAssemble the final blueprint package. Read all design/review/validation artifacts. Compose blueprint/architecture.md + blueprint/runbook.md, write available Mermaid diagrams, render 5 audience packs (blueprint/executive/admin-ops/security/developers, both md+pdf), then assemble_zip to produce exports/engagement-package.zip. Call set_step_status(step=\"blueprint\", ...) per the rule.",
+      kickoff: "Phase: blueprint\n\nAssemble the final blueprint package. Read all design/review/validation/event-portal artifacts. Compose blueprint/architecture.md + blueprint/runbook.md, write available Mermaid diagrams, render 5 audience packs (blueprint/executive/admin-ops/security/developers, both md+pdf), then assemble_zip to produce exports/engagement-package.zip. Call set_step_status(step=\"blueprint\", ...) per the rule.",
       singleAction: true,
     },
     blueprint: {
       nextLabel: "Provisioning",
       ctaLabel: "Start Provisioning →",
-      agent: "SAProvisioningAgent",
+      agent: "SAEPProvisioningAgent",
       kickoff: "Phase: provisioning\n\nProvision the Event Portal model. Pre-flight (opt-in check + verify_tenant_access + validation gate), then dry-run plan, then per-layer creation [domains → schemas → events → applications] with reuse-by-content-match. Export AsyncAPI per provisioned application. Call set_step_status(step=\"provisioning\", ...) per the rule.",
       // Provisioning supports Mode: auto / Mode: interactive — render
       // both buttons so the user can choose per-layer confirmation vs

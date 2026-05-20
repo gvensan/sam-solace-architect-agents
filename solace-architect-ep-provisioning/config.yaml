@@ -1,4 +1,4 @@
-# SAProvisioningAgent — SAM agent component config (apps: form, converted 2026-05-19).
+# SAEPProvisioningAgent — SAM agent component config (apps: form, converted 2026-05-19).
 #
 # Structural conversion from legacy `agent:` shape; system_prompt is ported
 # verbatim from the legacy config. Per-agent prompt refactoring to v2's
@@ -8,7 +8,7 @@
 log:
   stdout_log_level: INFO
   log_file_level: DEBUG
-  log_file: sa-provisioning.log
+  log_file: sa-ep-provisioning.log
 
 shared_config:
   - broker_connection: &broker_connection
@@ -36,7 +36,7 @@ shared_config:
         artifact_scope: namespace
 
 apps:
-  - name: sa-provisioning-app
+  - name: sa-ep-provisioning-app
     app_base_path: .
     app_module: solace_agent_mesh.agent.sac.app
     broker:
@@ -45,8 +45,8 @@ apps:
     app_config:
       namespace: ${NAMESPACE}
       supports_streaming: true
-      agent_name: "SAProvisioningAgent"
-      display_name: "SAProvisioningAgent"
+      agent_name: "SAEPProvisioningAgent"
+      display_name: "SAEPProvisioningAgent"
       # Opt out of the framework's artifact_management builtin group so the
       # core's engagement-scoped list_artifacts wins under the same name.
       auto_inject_artifact_tools: false
@@ -66,14 +66,14 @@ apps:
       # per-plugin log handler AND installs the after_model_callback
       # telemetry patch (idempotent across agents in the same process).
       agent_init_function:
-        module: solace_architect_provisioning.lifecycle
+        module: solace_architect_ep_provisioning.lifecycle
         name: init
       agent_cleanup_function:
-        module: solace_architect_provisioning.lifecycle
+        module: solace_architect_ep_provisioning.lifecycle
         name: cleanup
 
       instruction: |
-        You are SAProvisioningAgent — the LIVE Event Portal provisioning
+        You are SAEPProvisioningAgent — the LIVE Event Portal provisioning
         agent for Solace Architect. You translate the design's Event
         Portal model into actual EP objects via the EP Designer API.
         This is the ONLY agent that touches real infrastructure;
@@ -240,7 +240,7 @@ apps:
 
         Then call `set_step_status(engagement_id, step="provisioning",
         status=<see rule below>, note="<≤80 chars>",
-        agent="SAProvisioningAgent")`. Rule:
+        agent="SAEPProvisioningAgent")`. Rule:
           - `DONE` — all layers provisioned cleanly; no open-items.
           - `DONE_WITH_CONCERNS` — provisioned but with reuse-by-match
             ambiguity or post-provisioning advisory open-items.

@@ -734,6 +734,7 @@
 </div>
 
 <div class="actions">
+  <button class="secondary" type="button" onclick="newIntake()" title="Empty all fields and prepare a fresh intake. Any unsaved draft is discarded.">New</button>
   <button class="secondary" type="button" onclick="saveDraft()">Save draft</button>
   <button class="secondary" type="button" onclick="openLoadIntakeModal()" title="Load an existing engagement's intake into this form for review or copy-paste-edit">Load existing…</button>
   <span class="draft-status" id="draft-status"></span>
@@ -1157,6 +1158,26 @@ function markDirty() {
     updateCatalogSummary();
   }, 400);
 }
+function newIntake() {
+  // Empty every field and start a fresh intake. Destructive — confirm
+  // first so a stray click doesn't wipe an in-progress form. Three
+  // cleanups:
+  //   1. Drop the localStorage draft so loadDraft() on the next page
+  //      load doesn't restore it.
+  //   2. Navigate to /intake/new — gives a deterministic blank state
+  //      regardless of whether we're currently on /intake/new (where a
+  //      hard refresh is enough) or /intake/edit/<eid> (where we want
+  //      to leave the per-engagement URL behind).
+  //   3. The redirect implicitly reloads the page, so every field,
+  //      every dynamically-added systems/events row, every progress
+  //      indicator, and the autosave timer all reset.
+  if (!confirm('Start a fresh intake?\n\nAny unsaved values in this form will be discarded.')) {
+    return;
+  }
+  try { localStorage.removeItem(STORAGE_KEY); } catch {}
+  window.location.href = '/intake/new';
+}
+
 function saveDraft() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(collectData()));

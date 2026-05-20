@@ -1,4 +1,4 @@
-# solace-architect-provisioning
+# solace-architect-ep-provisioning
 
 **SAM agent plugin** — Opt-in live EP provisioning via EP Designer MCP. Strictly opt-in (intake.preferences.provision_event_portal). Never silently skips.
 
@@ -18,7 +18,7 @@ pip install -e .
 ## Install (end users, after community-repo PR merges)
 
 ```bash
-sam plugin add solace-architect-provisioning --plugin solace-architect-provisioning
+sam plugin add solace-architect-ep-provisioning --plugin solace-architect-ep-provisioning
 ```
 
 ## License
