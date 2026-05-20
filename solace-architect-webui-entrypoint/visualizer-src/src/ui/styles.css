@@ -1,0 +1,21 @@
+@keyframes flashRow {
+  0%   { background-color: rgba(0, 200, 149, 0.22); }
+  60%  { background-color: rgba(0, 200, 149, 0.10); }
+  100% { background-color: transparent; }
+}
+
+.timeline-row {
+  position: relative;
+  transition: background-color 250ms ease-out, box-shadow 250ms ease-out;
+}
+
+/* One-shot pulse when the row first arrives in the list. */
+.timeline-row-fresh {
+  animation: flashRow 1.4s ease-out;
+}
+
+/* Persistent indicator while the row's particle is in flight on the canvas. */
+.timeline-row-playing {
+  background-color: rgba(0, 200, 149, 0.08);
+  box-shadow: inset 3px 0 0 #00C895;
+}
