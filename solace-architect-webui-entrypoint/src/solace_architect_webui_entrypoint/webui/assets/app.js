@@ -522,20 +522,9 @@
           || hasBlueprintArtifact
         );
 
-        // Provisioning — SAEPProvisioningAgent writes provisioning/* (opt-in).
-        const provisioningStatus = lifecycle?.steps?.provisioning?.status || "NOT_STARTED";
-        const provisioningNote = lifecycle?.steps?.provisioning?.note || "";
-        const provisioningDone = provisioningStatus === "DONE" || provisioningStatus === "DONE_WITH_CONCERNS";
-        const hasProvisioningArtifact = artifacts.some(a => a.startsWith("provisioning/"));
-        const provisioningInProgress = !provisioningDone && (
-          (provisioningStatus !== "NOT_STARTED")
-          || hasProvisioningArtifact
-        );
-
         // Active step on the lifecycle banner. Order matches PHASE_NEXT:
-        // intake → discovery → design → review → validation → event-portal → blueprint → provisioning.
-        const activeStepId = provisioningDone ? "complete"
-          : (provisioningInProgress || blueprintDone) ? "provisioning"
+        // intake → discovery → design → review → validation → event-portal → blueprint.
+        const activeStepId = blueprintDone ? "complete"
           : (blueprintInProgress || eventPortalDone) ? "blueprint"
           : (eventPortalInProgress || validationDone) ? "event-portal"
           : (validationInProgress || reviewDone) ? "validation"
@@ -551,7 +540,6 @@
         if (validationDone) completedSteps.add("validation");
         if (eventPortalDone) completedSteps.add("event-portal");
         if (blueprintDone) completedSteps.add("blueprint");
-        if (provisioningDone) completedSteps.add("provisioning");
 
         // Blocking open-items affecting Blueprint — typically recorded by
         // SAValidationAgent with affecting_step="blueprint". When any are
@@ -571,7 +559,6 @@
           validationStatus, validationNote, validationDone, validationInProgress,
           eventPortalStatus, eventPortalNote, eventPortalDone, eventPortalInProgress,
           blueprintStatus, blueprintNote, blueprintDone, blueprintInProgress,
-          provisioningStatus, provisioningNote, provisioningDone, provisioningInProgress,
           blueprintBlockers,
         });
 
@@ -987,7 +974,7 @@
   function renderProgressBanner({ active, completed }) {
     // Lifecycle steps shown across the top of the Progress view.
     // Order matches PHASE_NEXT: intake → discovery → design → review →
-    // validation → event-portal → blueprint → provisioning.
+    // validation → event-portal → blueprint.
     const steps = [
       { id: "intake",       label: "Intake",       svg: "M3 4h18v4H3zM3 12h18v4H3zM3 20h18" },
       { id: "discovery",    label: "Discovery",    svg: "M11 19a8 8 0 1 1 0-16 8 8 0 0 1 0 16zm10 2-5-5" },
@@ -996,7 +983,6 @@
       { id: "validation",   label: "Validation",   svg: "M5 12l5 5L20 7" },
       { id: "event-portal", label: "Event Portal", svg: "M4 12a8 8 0 1 0 16 0 8 8 0 0 0-16 0zM12 4v8l5 3" },
       { id: "blueprint",    label: "Blueprint",    svg: "M4 4h16v16H4zM4 9h16M9 4v16" },
-      { id: "provisioning", label: "Provisioning", svg: "M12 2v6M12 22v-6M2 12h6M22 12h-6M5 5l4 4M19 19l-4-4M19 5l-4 4M5 19l4-4" },
     ];
     return `
       <div class="progress-banner" role="navigation" aria-label="Engagement lifecycle">
@@ -1042,7 +1028,6 @@
     validationStatus, validationNote, validationDone, validationInProgress,
     eventPortalStatus, eventPortalNote, eventPortalDone, eventPortalInProgress,
     blueprintStatus, blueprintNote, blueprintDone, blueprintInProgress,
-    provisioningStatus, provisioningNote, provisioningDone, provisioningInProgress,
     blueprintBlockers,
   }) {
     blueprintBlockers = blueprintBlockers || [];
@@ -1083,48 +1068,7 @@
         <span class="secondary-action-hint">— discovery brief changed? wipe design output and start fresh</span>
       </div>`;
 
-    // Provisioning DONE — engagement complete.
-    if (provisioningDone) {
-      const badge = provisioningStatus === "DONE_WITH_CONCERNS"
-        ? `<span class="status-badge advisory">Done with concerns</span>`
-        : `<span class="status-badge done">Done</span>`;
-      return `
-        <div class="progress-cta done" role="region" aria-label="Provisioning complete">
-          <div class="progress-cta-body">
-            <div class="progress-cta-eyebrow">Engagement complete</div>
-            <h2>Provisioning is complete ${badge}</h2>
-            ${provisioningNote ? `<p>${escapeHtml(provisioningNote)}</p>` : ""}
-            <p>The Event Portal model has been provisioned. AsyncAPI specs
-            are exported per application under <code>provisioning/asyncapi/</code>.
-            The full engagement package (architecture, runbook, audience
-            packs) is at <code>exports/engagement-package.zip</code>.</p>
-          </div>
-          <div class="progress-cta-actions progress-cta-actions-row">
-            <a class="cta-btn" href="/projects/${encodeURIComponent(eid)}/artifacts">View artifacts →</a>
-          </div>
-        </div>`;
-    }
-
-    // Provisioning in progress.
-    if (provisioningInProgress) {
-      return `
-        <div class="progress-cta in-progress" role="region" aria-label="Provisioning in progress">
-          <div class="progress-cta-body">
-            <div class="progress-cta-eyebrow">Provisioning in progress</div>
-            <h2>Continue Provisioning in chat</h2>
-            <p>SAEPProvisioningAgent is creating Event Portal objects.
-            ${provisioningNote ? `<em>${escapeHtml(provisioningNote)}</em> ` : ""}
-            In Interactive mode, the agent pauses between layers for
-            Apply / Skip confirmation. Click <strong>Continue in chat →</strong>
-            to answer the next prompt.</p>
-          </div>
-          <div class="progress-cta-actions progress-cta-actions-row">
-            <button id="continue-in-chat-btn" class="cta-btn">Continue in chat →</button>
-          </div>
-        </div>`;
-    }
-
-    // Blueprint DONE — Provisioning is opt-in.
+    // Blueprint DONE — engagement complete (terminal state).
     if (blueprintDone) {
       const badge = blueprintStatus === "DONE_WITH_CONCERNS"
         ? `<span class="status-badge advisory">Done with concerns</span>`
@@ -1132,30 +1076,18 @@
       return `
         <div class="progress-cta done" role="region" aria-label="Blueprint complete">
           <div class="progress-cta-body">
-            <div class="progress-cta-eyebrow">Blueprint → Provisioning (opt-in)</div>
+            <div class="progress-cta-eyebrow">Engagement complete</div>
             <h2>Blueprint is complete ${badge}</h2>
             ${blueprintNote ? `<p>${escapeHtml(blueprintNote)}</p>` : ""}
             <p>The deliverable package is assembled — architecture narrative,
             ops runbook, diagrams, and 5 audience packs bundled into
-            <code>exports/engagement-package.zip</code>. The engagement
-            can end here, or you can opt-in to live Event Portal
-            <strong>Provisioning</strong> — SAEPProvisioningAgent will
-            create EP objects via the EP Designer API (interactive by
-            default, with Auto mode if you prefer hands-off).</p>
-            <p class="muted" style="border-left: 3px solid var(--accent, #00C895); padding-left: 10px; font-size: 12px;">
-              <strong>Note:</strong> Live EP API calls are Phase-5 work
-              and not yet wired (see <code>ep_designer_mcp_tools.py</code>
-              — every <code>create_*</code> returns a structured
-              "not yet implemented" response). Pre-flight checks +
-              dry-run plan generation work today; actual provisioning
-              halts at the first create call.
-            </p>
+            <code>exports/engagement-package.zip</code>. If Event Portal
+            provisioning was opted-in at intake, live tenant objects and
+            AsyncAPI specs were already created under
+            <code>event-portal/</code> in the prior step.</p>
           </div>
           <div class="progress-cta-actions progress-cta-actions-row">
-            <button id="start-provisioning-btn" class="cta-btn" data-mode="interactive">Start Provisioning →</button>
-            <button id="start-provisioning-auto-btn" class="cta-btn cta-btn-auto" data-mode="auto"
-                    title="Auto mode: provision all layers without per-layer confirmation; first error halts and reports.">Start Auto ⚡</button>
-            <a class="cta-btn cta-btn-secondary" href="/projects/${encodeURIComponent(eid)}/artifacts">View blueprint →</a>
+            <a class="cta-btn" href="/projects/${encodeURIComponent(eid)}/artifacts">View artifacts →</a>
           </div>
         </div>`;
     }
@@ -1486,8 +1418,6 @@
     const startEventPortalBtn = root.querySelector("#start-event-portal-btn");
     const startEventPortalAutoBtn = root.querySelector("#start-event-portal-auto-btn");
     const startBlueprintBtn = root.querySelector("#start-blueprint-btn");
-    const startProvisioningBtn = root.querySelector("#start-provisioning-btn");
-    const startProvisioningAutoBtn = root.querySelector("#start-provisioning-auto-btn");
     lockOnClick(startDiscoveryBtn, "Starting Discovery…");
     lockOnClick(continueBtn, "Opening chat…");
     lockOnClick(startDesignBtn, "Starting Design…");
@@ -1497,8 +1427,6 @@
     lockOnClick(startEventPortalBtn, "Starting Event Portal…");
     lockOnClick(startEventPortalAutoBtn, "Starting Auto…");
     lockOnClick(startBlueprintBtn, "Starting Blueprint…");
-    lockOnClick(startProvisioningBtn, "Starting Provisioning…");
-    lockOnClick(startProvisioningAutoBtn, "Starting Auto…");
 
     // Shared kickoff body for Design; the click handlers prefix
     // "Mode: <mode>" so the Domain agent's prompt branches accordingly.
@@ -1532,7 +1460,7 @@
     startReviewBtn?.addEventListener("click", () =>
       openChatWith(REVIEW_KICKOFF, "SAOrchestratorAgent"));
 
-    // Single-agent phases (validation/event-portal/blueprint/provisioning) —
+    // Single-agent phases (validation/event-portal/blueprint) —
     // direct dispatch to the phase agent. Kickoff bodies match PHASE_NEXT
     // entries so both entry points (Progress CTA + chat phase-handoff card)
     // lead to the same conversation.
@@ -1548,15 +1476,9 @@
     startEventPortalAutoBtn?.addEventListener("click", () =>
       openChatWith(`Mode: auto\n\n${EP_KICKOFF_BODY}`, "SAEventPortalAgent"));
 
-    // Blueprint is now downstream of event-portal — kickoff lives there.
+    // Blueprint is now the terminal lifecycle step — kickoff lives in PHASE_NEXT["event-portal"].
     startBlueprintBtn?.addEventListener("click", () =>
       openChatWith(PHASE_NEXT["event-portal"].kickoff, "SABlueprintAgent"));
-
-    const PROVISIONING_KICKOFF_BODY = PHASE_NEXT.blueprint.kickoff;
-    startProvisioningBtn?.addEventListener("click", () =>
-      openChatWith(`Mode: interactive\n\n${PROVISIONING_KICKOFF_BODY}`, "SAEPProvisioningAgent"));
-    startProvisioningAutoBtn?.addEventListener("click", () =>
-      openChatWith(`Mode: auto\n\n${PROVISIONING_KICKOFF_BODY}`, "SAEPProvisioningAgent"));
 
     root.querySelector("#restart-discovery-btn")?.addEventListener("click", () =>
       openRestartDiscoveryModal(eid));
@@ -1603,9 +1525,9 @@
         const res = await fetch(`/api/engagements/${encodeURIComponent(eid)}/discovery`, { method: "DELETE" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         // Backend cascade-wipes the full lifecycle from design through
-        // provisioning. Mirror that on the frontend so every downstream
+        // blueprint. Mirror that on the frontend so every downstream
         // phase-handoff card can re-fire cleanly on the next run.
-        ["discovery", "design", "review", "validation", "event-portal", "blueprint", "provisioning"]
+        ["discovery", "design", "review", "validation", "event-portal", "blueprint"]
           .forEach(step => _clearPhaseHint(eid, step));
         setAutoMode(eid, false);
         closeModal();
@@ -1665,9 +1587,9 @@
         const res = await fetch(`/api/engagements/${encodeURIComponent(eid)}/design`, { method: "DELETE" });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         // The backend cascade-wipes EVERY downstream phase (review,
-        // validation, blueprint, provisioning). Mirror that on the
+        // validation, event-portal, blueprint). Mirror that on the
         // frontend so a re-run can re-fire every handoff card cleanly.
-        ["design", "review", "validation", "event-portal", "blueprint", "provisioning"]
+        ["design", "review", "validation", "event-portal", "blueprint"]
           .forEach(step => _clearPhaseHint(eid, step));
         setAutoMode(eid, false);
         closeModal();
@@ -2757,7 +2679,7 @@
       // against the live tenant, optionally confirms per layer, then
       // creates/reuses domains→schemas→events→applications and exports
       // AsyncAPI specs. Auto mode skips per-layer confirmations.
-      kickoff: "Phase: event-portal\n\nRun the Event Portal provisioning phase. Pre-flight (read event-portal/event-portal-model.yaml + verify_tenant_access), dry-run plan, then per-layer creation [domains → schemas → events → applications] with reuse-by-content-match. Export AsyncAPI per provisioned application. Call set_step_status(step=\"event-portal\", ...) per the rule.",
+      kickoff: "Phase: event-portal\n\nRun the Event Portal provisioning phase. Pre-flight (opt-in check + read event-portal/event-portal-model.yaml + verify tenant via list_application_domains + validation gate), dry-run plan, then per-layer creation [domains → schemas → events → applications] with reuse-by-content-match. Export AsyncAPI per provisioned application. Call set_step_status(step=\"event-portal\", ...) per the rule.",
       // Two-button CTA so the user can pick Auto (no per-layer prompts)
       // vs Interactive (default, safer for live infrastructure).
     },
@@ -2767,15 +2689,6 @@
       agent: "SABlueprintAgent",
       kickoff: "Phase: blueprint\n\nAssemble the final blueprint package. Read all design/review/validation/event-portal artifacts. Compose blueprint/architecture.md + blueprint/runbook.md, write available Mermaid diagrams, render 5 audience packs (blueprint/executive/admin-ops/security/developers, both md+pdf), then assemble_zip to produce exports/engagement-package.zip. Call set_step_status(step=\"blueprint\", ...) per the rule.",
       singleAction: true,
-    },
-    blueprint: {
-      nextLabel: "Provisioning",
-      ctaLabel: "Start Provisioning →",
-      agent: "SAEPProvisioningAgent",
-      kickoff: "Phase: provisioning\n\nProvision the Event Portal model. Pre-flight (opt-in check + verify_tenant_access + validation gate), then dry-run plan, then per-layer creation [domains → schemas → events → applications] with reuse-by-content-match. Export AsyncAPI per provisioned application. Call set_step_status(step=\"provisioning\", ...) per the rule.",
-      // Provisioning supports Mode: auto / Mode: interactive — render
-      // both buttons so the user can choose per-layer confirmation vs
-      // hands-off execution.
     },
   };
 

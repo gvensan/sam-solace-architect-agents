@@ -73,7 +73,6 @@ _GROUP_LABELS = {
     "blueprint": "Technical Blueprint",
     "executive": "Business Case",
     "diagrams": "Diagrams",
-    "provisioning": "Provisioning",
     "exports": "Exports",
 }
 
@@ -83,7 +82,7 @@ _PHASE_ORDER = [
     "discovery", "topic-design", "broker-select", "protocol-select",
     "sam-design", "mesh-design", "ha-dr", "integration", "migration",
     "event-portal", "reviews", "validation", "blueprint", "executive",
-    "provisioning", "diagrams", "exports",
+    "diagrams", "exports",
 ]
 
 
@@ -98,7 +97,7 @@ _AGENT_LABELS = {
     "SASecurityReviewerAgent": "security-review",
     "SAValidationAgent": "validation",
     "SABlueprintAgent": "blueprint",
-    "SAEPProvisioningAgent": "provisioning",
+    "SAEventPortalAgent": "event-portal",
 }
 
 
@@ -873,7 +872,6 @@ _GROUP_LABELS_INV = {
     "SADomainAgent": "topic-design",
     "SAValidationAgent": "validation",
     "SABlueprintAgent": "blueprint",
-    "SAEPProvisioningAgent": "provisioning",
     "SAEventPortalAgent": "event-portal",
 }
 
@@ -886,7 +884,6 @@ _STEP_LABELS = {
     "validation": "Validation",
     "event-portal": "Event Portal",
     "blueprint": "Blueprint",
-    "provisioning": "Provisioning",
 }
 
 # Step → artifact group key. Multi-scope agents (Design) map to
@@ -899,7 +896,6 @@ _STEP_TO_GROUP = {
     "validation": "validation",
     "event-portal": "event-portal",
     "blueprint": "blueprint",
-    "provisioning": "provisioning",
 }
 
 # Phase bucket → ordered list of group keys (mirrors V1's PHASE_MAP, inverted).
@@ -909,7 +905,7 @@ _PHASE_BUCKETS: list[tuple[str, list[str]]] = [
     ("Design", ["topic-design", "broker-select", "sam-design", "protocol-select",
                 "mesh-design", "ha-dr", "integration", "migration", "event-portal"]),
     ("Reviews", ["reviews"]),
-    ("Finalize", ["validation", "blueprint", "executive", "provisioning", "diagrams"]),
+    ("Finalize", ["validation", "blueprint", "executive", "diagrams"]),
 ]
 
 

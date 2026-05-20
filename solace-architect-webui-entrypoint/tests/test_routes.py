@@ -80,8 +80,8 @@ async def test_intake_preview_returns_routing_decision():
     r = await intake_preview(partial_intake=brief)
     assert "included_steps" in r
     assert "skipped_steps" in r
-    # provisioning is opt-out → skipped
-    assert any(s["step"] == "provisioning" for s in r["skipped_steps"])
+    # event-portal (live provisioning) is opt-in → skipped when preference=false
+    assert any(s["step"] == "event-portal" for s in r["skipped_steps"])
 
 
 @pytest.mark.asyncio
@@ -172,10 +172,11 @@ async def test_reset_design_cascades_to_review_state():
 
 @pytest.mark.asyncio
 async def test_reset_design_cascades_to_all_downstream_phases():
-    """Restart Design must wipe Validation + Blueprint + Provisioning state too,
-    not just Review. Without this cascade, the user could re-run Design and find
-    stale blueprint packages / provisioning records pointing at deleted scope
-    artifacts. The cascade order is review → validation → blueprint → provisioning.
+    """Restart Design must wipe Validation + Event Portal + Blueprint state
+    too, not just Review. Without this cascade, the user could re-run Design
+    and find stale blueprint packages / event-portal records pointing at
+    deleted scope artifacts. The cascade order is review → validation →
+    event-portal → blueprint.
     """
     from solace_architect_core.tools import (
         artifact_tools, decision_tools, lifecycle_tools,
@@ -188,15 +189,15 @@ async def test_reset_design_cascades_to_all_downstream_phases():
     await artifact_tools.write_artifact(eid, "topic-design/topic-taxonomy.yaml", "topics: []")
     await artifact_tools.write_artifact(eid, "reviews/architect-review.md", "# Review")
     await artifact_tools.write_artifact(eid, "validation/validation-report.md", "# Validation")
+    await artifact_tools.write_artifact(eid, "event-portal/provisioned.yaml", "domains: []")
     await artifact_tools.write_artifact(eid, "blueprint/architecture.md", "# Architecture")
     await artifact_tools.write_artifact(eid, "exports/engagement-package.zip", "(zip)")
-    await artifact_tools.write_artifact(eid, "provisioning/provisioned.yaml", "domains: []")
-    for step in ("design", "review", "validation", "blueprint", "provisioning"):
+    for step in ("design", "review", "validation", "event-portal", "blueprint"):
         await lifecycle_tools.set_step_status(
-            eid, step=step, status="DONE", agent=f"SA{step.capitalize()}Agent",
+            eid, step=step, status="DONE", agent="SA{}Agent".format(step.replace("-", "").capitalize()),
         )
     # Seed open-items from each cascading source.
-    for source in ("domain", "review-deferred", "validation", "provisioning"):
+    for source in ("domain", "review-deferred", "validation", "event-portal"):
         await decision_tools.record_open_item(
             eid, severity="advisory", source=source,
             description=f"seeded {source} item",
@@ -207,23 +208,23 @@ async def test_reset_design_cascades_to_all_downstream_phases():
     # Every downstream phase's artifacts gone.
     remaining = (await artifact_tools.list_artifacts(eid)).data or []
     assert not any(a.startswith(("topic-design/", "reviews/", "validation/",
-                                  "blueprint/", "exports/", "provisioning/"))
+                                  "event-portal/", "blueprint/", "exports/"))
                     for a in remaining), remaining
 
     # Every downstream phase's step status cleared.
     status_after = (await lifecycle_tools.get_engagement_status(eid)).data
-    for step in ("design", "review", "validation", "blueprint", "provisioning"):
+    for step in ("design", "review", "validation", "event-portal", "blueprint"):
         assert step not in status_after["steps"], f"{step} not cleared: {status_after['steps']}"
 
     # Every source's open-items superseded.
-    for source in ("domain", "review-deferred", "validation", "provisioning"):
+    for source in ("domain", "review-deferred", "validation", "event-portal"):
         items = (await decision_tools.read_open_items(eid, source=source)).data
         assert all(i["status"] == "superseded" for i in items), (source, items)
 
     # Response payload reports the full cascade.
     assert "validation" in result["cascaded_steps"]
+    assert "event-portal" in result["cascaded_steps"]
     assert "blueprint" in result["cascaded_steps"]
-    assert "provisioning" in result["cascaded_steps"]
 
 
 @pytest.mark.asyncio
@@ -263,8 +264,8 @@ async def test_reset_discovery_cascades_through_full_lifecycle():
     for step in ("design", "review", "validation", "blueprint", "discovery"):
         assert step not in status_after["steps"], f"{step} not cleared: {status_after['steps']}"
 
-    # Cascade scope covers design through provisioning, including the
-    # event-portal step inserted between validation and blueprint.
+    # Cascade scope covers design through blueprint, including the
+    # event-portal step between validation and blueprint.
     assert set(result["cascaded_steps"]) == {
-        "design", "review", "validation", "event-portal", "blueprint", "provisioning",
+        "design", "review", "validation", "event-portal", "blueprint",
     }

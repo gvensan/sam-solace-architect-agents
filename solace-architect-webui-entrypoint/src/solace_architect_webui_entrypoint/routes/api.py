@@ -201,7 +201,7 @@ async def reset_discovery(engagement_id: str) -> Any:
                 )
                 superseded += 1
 
-    # Cascade-wipe every downstream phase (design through provisioning) — they
+    # Cascade-wipe every downstream phase (design through blueprint) — they
     # all derive from Discovery, so re-running with stale design/review/etc
     # would leave the engagement in a contradictory state.
     cascade = await _reset_downstream(engagement_id, after_step="discovery")
@@ -285,7 +285,7 @@ async def reset_design(engagement_id: str) -> Any:
                 superseded += 1
 
     # Cascade-wipe every phase downstream of design — review, validation,
-    # blueprint, provisioning — since they all derive from the design
+    # event-portal, blueprint — since they all derive from the design
     # artifacts we just deleted. Without this, a re-run of Design would
     # leave the engagement with stale findings, validation reports, and
     # blueprint packages pointing at deleted artifacts.
@@ -363,17 +363,17 @@ async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
     """Cascade-wipe every lifecycle phase strictly AFTER ``after_step``.
 
     Used by reset_discovery (after_step="discovery" → wipe design through
-    provisioning) and reset_design (after_step="design" → wipe review
-    through provisioning). Keeps lifecycle re-runs from acting on stale
+    blueprint) and reset_design (after_step="design" → wipe review
+    through blueprint). Keeps lifecycle re-runs from acting on stale
     downstream state.
 
     Cascade order matches the lifecycle:
-      discovery → design → review → validation → event-portal → blueprint → provisioning
+      discovery → design → review → validation → event-portal → blueprint
 
     Each step's wipe removes its artifacts, clears its step status, drops
     its telemetry, and supersedes its source-attributed open-items.
     """
-    order = ("discovery", "design", "review", "validation", "event-portal", "blueprint", "provisioning")
+    order = ("discovery", "design", "review", "validation", "event-portal", "blueprint")
     if after_step not in order:
         return {}
     start_idx = order.index(after_step) + 1
@@ -463,20 +463,6 @@ async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
         removed.extend(await _unlink_category(engagement_id, "exports"))
         await lifecycle_tools.clear_step_status(engagement_id, "blueprint")
         await _clear_step_telemetry(engagement_id, "blueprint")
-
-    if "provisioning" in to_wipe:
-        removed.extend(await _unlink_category(engagement_id, "provisioning"))
-        items_res = await decision_tools.read_open_items(engagement_id, source="provisioning")
-        if items_res.ok and items_res.data:
-            for item in items_res.data:
-                if item.get("status") == "open":
-                    await decision_tools.update_open_item_status(
-                        engagement_id, item_id=item["id"], new_status="superseded",
-                        resolution_note=f"Superseded by {after_step.capitalize()} restart (cascade)",
-                    )
-                    superseded += 1
-        await lifecycle_tools.clear_step_status(engagement_id, "provisioning")
-        await _clear_step_telemetry(engagement_id, "provisioning")
 
     return {
         "cascaded_steps": list(to_wipe),
