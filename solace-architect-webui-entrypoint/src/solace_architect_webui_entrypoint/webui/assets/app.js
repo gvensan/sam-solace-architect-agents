@@ -361,6 +361,19 @@
       projectNav.classList.add("hidden");
     }
 
+    // Diagnostics → Live View. Always available (even with no active
+    // project); when a project is active, scope the visualizer to that
+    // engagement via the ?engagement= query param so it filters A2A
+    // traffic client-side.
+    const liveNav = document.getElementById("live-nav");
+    const vizLink = document.getElementById("visualizer-link");
+    if (liveNav && vizLink) {
+      liveNav.classList.remove("hidden");
+      vizLink.href = eid
+        ? `/visualizer?engagement=${encodeURIComponent(eid)}`
+        : `/visualizer`;
+    }
+
     // Chat is no longer project-gated — it targets any agent on the SAM mesh.
     // If a project is active, its id is sent as engagement_id metadata so the
     // agent can scope its work; otherwise the chat is project-free.

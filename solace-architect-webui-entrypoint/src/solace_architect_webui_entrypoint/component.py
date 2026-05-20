@@ -203,7 +203,10 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                 async def _no_cache_static(request, handler):
                     response = await handler(request)
                     path = request.path
-                    if path.startswith("/assets/") or path in {"/", "/settings"} or path.startswith("/intake"):
+                    if (path.startswith("/assets/")
+                            or path in {"/", "/settings"}
+                            or path.startswith("/intake")
+                            or path.startswith("/visualizer")):
                         response.headers.setdefault("Cache-Control", "no-cache, must-revalidate")
                     return response
 
@@ -222,6 +225,20 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                 self._app.router.add_get("/intake", self._serve_intake_form)
                 self._app.router.add_get("/intake/{tail:.*}", self._serve_intake_form)
                 self._app.router.add_static("/assets/", static_dir / "assets", show_index=False)
+                # Visualizer (forked from sam-visualizer; lives in visualizer-src/,
+                # built into webui/visualizer/). Static mount MUST come before
+                # the catch-all so /visualizer/assets/* doesn't get swallowed.
+                self._app.router.add_static(
+                    "/visualizer/assets/",
+                    static_dir / "visualizer" / "assets",
+                    show_index=False,
+                )
+                self._app.router.add_get("/visualizer", self._serve_visualizer)
+                self._app.router.add_get("/visualizer/{tail:.*}", self._serve_visualizer)
+                # Visualizer pulls broker creds + namespace + current engagement
+                # from this endpoint on page load. Direct route (not via the
+                # API_ROUTES adapter) so we can read the session cookie.
+                self._app.router.add_get("/api/visualizer/config", self._visualizer_config)
                 # SSE chat stream + chat POST + agent discovery
                 self._app.router.add_get("/api/chat/stream/{session_id}", self._sse_chat_stream)
                 self._app.router.add_post("/api/chat/message", self._chat_message)
@@ -401,6 +418,87 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         """Serve the intake form for /intake/new and /intake/edit/{id}."""
         return web.FileResponse(_webui_static_dir() / "intake" / "index.html",
                                 headers={"Cache-Control": "no-store"})
+
+    async def _serve_visualizer(self, request: web.Request) -> web.Response:
+        """Serve the visualizer SPA shell for /visualizer and any sub-path.
+
+        The Preact app fetches /api/visualizer/config on mount to learn the
+        broker URL + credentials + namespace + current engagement_id from the
+        server-side session — no broker-config modal needed when running
+        embedded.
+        """
+        return web.FileResponse(_webui_static_dir() / "visualizer" / "index.html",
+                                headers={"Cache-Control": "no-store"})
+
+    async def _visualizer_config(self, request: web.Request) -> web.Response:
+        """Return broker + namespace + user + engagement context for the visualizer.
+
+        The visualizer's `fetch('/api/visualizer/config')` on mount lands here.
+        We hand over the entrypoint's own env-var-sourced broker creds (so the
+        browser doesn't need a manual config modal), the active user (resolved
+        from the session cookie when auth is on, else 'anonymous'), and the
+        engagement_id from the query string (preferred) or session state.
+
+        Security: broker user/password reach the browser over the same origin
+        that's already gated by `WEBUI_REQUIRE_AUTH`. For multi-tenant / shared
+        deployments, swap the env-var lookup below for a dedicated read-only
+        broker viewer credential — see plugins/solace-architect-webui-entrypoint/
+        visualizer-src/README.md for the upgrade path.
+        """
+        # Resolve user identity from the session cookie. Mirrors the path used
+        # by the chat endpoint; if auth is off, returns anonymous.
+        session_token = request.cookies.get(SESSION_COOKIE)
+        if self._auth_state.require_auth:
+            user_row = validate_session(self._auth_state, session_token) if session_token else None
+            if user_row:
+                claims = user_to_claims(user_row)
+            else:
+                # Match how the dashboard treats unauthenticated requests —
+                # the auth middleware would normally redirect to /login before
+                # this point, but be defensive.
+                return web.json_response(
+                    {"error": "not authenticated"}, status=401,
+                    headers={"Cache-Control": "no-store"},
+                )
+        else:
+            claims = {"id": "anonymous", "name": "anonymous"}
+
+        # Look up the requested engagement name (best-effort; visualizer
+        # doesn't fail if this is null).
+        engagement_id = request.query.get("engagement") or None
+        engagement_name: Optional[str] = None
+        if engagement_id:
+            try:
+                from solace_architect_core.tools import project_tools
+                from solace_architect_core._user_context import scoped_user as _scoped_user
+                with _scoped_user(claims.get("id")):
+                    proj_list = (await project_tools.list_projects(include_archived=True)).data or []
+                    match = next((p for p in proj_list if p.get("id") == engagement_id), None)
+                    if match:
+                        engagement_name = match.get("name") or match.get("id")
+            except Exception:    # noqa: BLE001 — name is informational only
+                log.exception("%s visualizer-config: project lookup failed", self.log_identifier)
+
+        return web.json_response(
+            {
+                "user": {
+                    "id": claims.get("id", "anonymous"),
+                    "display_name": claims.get("name") or claims.get("id", "anonymous"),
+                },
+                "broker": {
+                    "url": os.environ.get("SOLACE_BROKER_URL", ""),
+                    "vpn": os.environ.get("SOLACE_BROKER_VPN", "default"),
+                    "username": os.environ.get("SOLACE_BROKER_USERNAME", ""),
+                    "password": os.environ.get("SOLACE_BROKER_PASSWORD", ""),
+                },
+                "namespace": os.environ.get("NAMESPACE", ""),
+                "engagement": (
+                    {"id": engagement_id, "name": engagement_name}
+                    if engagement_id else None
+                ),
+            },
+            headers={"Cache-Control": "no-store"},
+        )
 
     async def _serve_export_file(self, request: web.Request) -> web.Response:
         """Serve a rendered export artifact (HTML/PDF/ZIP) as raw bytes.

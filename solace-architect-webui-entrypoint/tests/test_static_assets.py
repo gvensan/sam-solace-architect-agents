@@ -96,3 +96,35 @@ def test_dashboard_styles_have_dark_mode_palette():
     css = (PKG_ROOT / "webui" / "assets" / "styles.css").read_text()
     assert '[data-theme="dark"]' in css
     assert "--primary:" in css and "--accent:" in css
+
+
+# ---------- Visualizer (forked from sam-visualizer) ----------
+
+
+def test_visualizer_bundle_present():
+    """Built visualizer assets ship in the wheel; users don't need Node."""
+    viz = PKG_ROOT / "webui" / "visualizer"
+    assert viz.is_dir(), "webui/visualizer/ missing — run `make visualizer-build`"
+    index = viz / "index.html"
+    assert index.exists(), "visualizer index.html missing — run `make visualizer-build`"
+    # Asset paths must be prefixed with /visualizer/ (vite base config),
+    # otherwise the bundle would 404 when mounted under that route.
+    text = index.read_text()
+    assert "/visualizer/assets/" in text, (
+        "visualizer index.html asset URLs are not prefixed with /visualizer/ — "
+        "rebuild via `make visualizer-build` with vite.config.ts base='/visualizer/'"
+    )
+    # At least one JS bundle file must exist under assets/.
+    assets = viz / "assets"
+    assert assets.is_dir()
+    js_files = list(assets.glob("*.js"))
+    assert js_files, "no .js bundle under visualizer/assets/"
+
+
+def test_sidebar_has_live_view_link():
+    """Dashboard sidebar exposes the visualizer as a Diagnostics → Live View entry."""
+    html = (PKG_ROOT / "webui" / "index.html").read_text()
+    assert 'id="live-nav"' in html, "Diagnostics sidebar section missing"
+    assert 'id="visualizer-link"' in html, "visualizer link element missing"
+    js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
+    assert "visualizer-link" in js, "app.js doesn't wire visualizer link href to active engagement"

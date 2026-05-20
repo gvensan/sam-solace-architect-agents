@@ -85,6 +85,13 @@
           <a href="#" class="nav-link" data-view="export">Export</a>
         </div>
 
+        <!-- Live View (visualizer) — separate section because it's a full
+             page navigation (Preact app at /visualizer), not an in-SPA view. -->
+        <div id="live-nav" class="sidebar-section live-nav hidden">
+          <div class="sidebar-section-title">Diagnostics</div>
+          <a id="visualizer-link" href="/visualizer" class="nav-link">Live View</a>
+        </div>
+
         <div class="sidebar-spacer"></div>
         <div class="sidebar-footer">
           <span class="version">V2.0.0-alpha</span>
