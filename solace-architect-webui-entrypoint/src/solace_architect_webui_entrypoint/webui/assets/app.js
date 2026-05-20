@@ -2245,7 +2245,15 @@
         prime: "Let's start discovery — please review the intake and ask your first follow-up.",
       };
     } else if (discoveryInProgress) {
-      action = { label: "Continue Discovery →", agent: "SADiscoveryAgent", prime: "" };
+      // Empty prime made this button look broken — clicking it cleared the
+      // input but never sent anything, so users saw "nothing happens".
+      // Now it auto-sends a continuation nudge so SADiscoveryAgent picks up
+      // wherever it paused (next open gap / next question / next decision).
+      action = {
+        label: "Continue Discovery →",
+        agent: "SADiscoveryAgent",
+        prime: "Continue discovery — ask the next question, or finalise the brief if all gaps are resolved.",
+      };
     } else if (discoveryDone) {
       // Discovery done → next step is Design. Two buttons surface here:
       // Start Design (interactive — confirm every decision) and Start

@@ -426,8 +426,27 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         broker URL + credentials + namespace + current engagement_id from the
         server-side session — no broker-config modal needed when running
         embedded.
+
+        Vite's public/ directory (broker.png, future favicons, etc.) lands in
+        the bundle root, not under assets/. For any /visualizer/<file> request
+        where <file> exists in the visualizer bundle dir, serve that file with
+        an aiohttp-inferred Content-Type. Otherwise fall back to the SPA shell
+        so client-side routes (e.g. /visualizer/anything) still hit index.html.
+        Path-traversal is blocked by resolving the candidate path and asserting
+        it stays under the visualizer dir.
         """
-        return web.FileResponse(_webui_static_dir() / "visualizer" / "index.html",
+        viz_dir = (_webui_static_dir() / "visualizer").resolve()
+        tail = request.match_info.get("tail", "")
+        if tail:
+            candidate = (viz_dir / tail).resolve()
+            # path-traversal guard: candidate must be under viz_dir
+            try:
+                candidate.relative_to(viz_dir)
+            except ValueError:
+                return web.HTTPNotFound()
+            if candidate.is_file():
+                return web.FileResponse(candidate)
+        return web.FileResponse(viz_dir / "index.html",
                                 headers={"Cache-Control": "no-store"})
 
     async def _visualizer_config(self, request: web.Request) -> web.Response:

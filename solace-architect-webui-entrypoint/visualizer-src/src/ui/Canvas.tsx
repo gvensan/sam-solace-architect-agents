@@ -463,11 +463,14 @@ export function Canvas({ bus, animations, renderMode, theme, showLabels, onSelec
 
     // Broker logo: the rect stays as the click/selection target but is
     // visually replaced by an SVG image that hosts the literal "BROKER" mark.
+    // BASE_URL resolves to "/visualizer/" at build time (matches vite.config.ts
+    // `base`), so the final href is /visualizer/broker.png — the path the
+    // entrypoint serves the public/ asset under.
     enter
       .filter((d) => d.kind === "broker")
       .append("image")
       .attr("class", "node-image")
-      .attr("href", "/broker.png")
+      .attr("href", `${import.meta.env.BASE_URL}broker.png`)
       .attr("preserveAspectRatio", "xMidYMid meet")
       .attr("pointer-events", "none");
 
