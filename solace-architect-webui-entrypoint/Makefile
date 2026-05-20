@@ -40,15 +40,28 @@ visualizer-test:
 visualizer-clean:
 	rm -rf $(VISUALIZER_OUT)
 
-# CI guard: rebuild and assert the working tree is clean. If the built
-# assets in $(VISUALIZER_OUT) don't match what `npm run build` produces
-# from current $(VISUALIZER_DIR) source, this exits non-zero and prints
-# the diff. Add `make visualizer-verify` to any pre-merge check.
+# CI guard: rebuild and assert the working tree is clean — checks for BOTH
+# modified files (`git diff`) AND untracked files (`git ls-files --others`).
+# The untracked check is critical for the hashed bundles vite emits: each
+# build produces `index-<hash>.js` with a fresh name. Without the second
+# check, a brand-new bundle slips through unstaged and ships an index.html
+# that 404s its own JS.
 visualizer-verify:
 	@$(MAKE) visualizer-build
-	@if ! git diff --quiet -- $(VISUALIZER_OUT); then \
-	  echo "ERROR: $(VISUALIZER_OUT) is out of sync with $(VISUALIZER_DIR)/ source."; \
-	  echo "Run \`make visualizer-build\` and commit the result."; \
+	@dirty=0; \
+	if ! git diff --quiet -- $(VISUALIZER_OUT); then \
+	  echo "ERROR: $(VISUALIZER_OUT) has uncommitted changes vs source."; \
 	  git --no-pager diff --stat -- $(VISUALIZER_OUT); \
+	  dirty=1; \
+	fi; \
+	untracked=$$(git ls-files --others --exclude-standard -- $(VISUALIZER_OUT)); \
+	if [ -n "$$untracked" ]; then \
+	  echo "ERROR: $(VISUALIZER_OUT) has untracked files (likely a rebuilt hashed bundle):"; \
+	  printf '  %s\n' $$untracked; \
+	  dirty=1; \
+	fi; \
+	if [ $$dirty -eq 1 ]; then \
+	  echo; \
+	  echo "Run \`make visualizer-build\` then \`git add $(VISUALIZER_OUT)\` and commit."; \
 	  exit 1; \
 	fi
