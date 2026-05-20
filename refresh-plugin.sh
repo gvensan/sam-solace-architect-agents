@@ -27,6 +27,21 @@ set -euo pipefail
 
 REPO_URL="${SA_PLUGINS_REPO:-https://github.com/gvensan/sam-solace-architect-agents.git}"
 
+# Prefer the venv tooling that update.sh discovered. When run directly
+# (without update.sh), fall back to PATH — but warn loudly if PATH resolves
+# to pyenv shims, because those can silently route installs to a different
+# Python than the user expects.
+PIP="${SA_VENV_PIP:-$(command -v pip || true)}"
+PY="${SA_VENV_PY:-$(command -v python || true)}"
+SAM_BIN="${SA_VENV_BIN:+$SA_VENV_BIN/sam}"
+[ -n "${SAM_BIN:-}" ] && [ ! -x "$SAM_BIN" ] && SAM_BIN=""
+SAM_BIN="${SAM_BIN:-$(command -v sam || true)}"
+
+if [ -z "$PIP" ] || [ -z "$PY" ]; then
+  echo "✗ pip or python not found on PATH and no SA_VENV_PIP/SA_VENV_PY env vars set" >&2
+  exit 1
+fi
+
 usage() {
   sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
   exit "${1:-0}"
@@ -55,12 +70,42 @@ url="${url}#subdirectory=${plugin}"
 echo "→ refreshing ${plugin}"
 echo "  source: ${url}"
 
+# Sanity check: every SA plugin's __init__.py imports from solace_architect_core.
+# If core isn't in the active environment, `sam plugin add` later in this
+# script would fail with the confusing "Plugin module not found" message. Fail
+# fast here with a clear hint instead. The webui-entrypoint is an exception —
+# its __init__.py is lazy — but we keep the check uniform for clarity.
+# Probe a known submodule, not just the namespace. An empty leftover dir in
+# site-packages would make `import solace_architect_core` succeed but
+# `solace_architect_core.logging_setup` (which every plugin imports) fail.
+core_probe='import solace_architect_core, sys
+ok = solace_architect_core.__file__ is not None
+try:
+    import solace_architect_core.logging_setup
+except Exception:
+    ok = False
+sys.exit(0 if ok else 1)'
+if ! "$PY" -c "$core_probe" >/dev/null 2>&1; then
+  echo >&2
+  echo "✗ solace-architect-core is missing or corrupted in the active Python." >&2
+  echo "  (Either not installed, or only an empty namespace-package directory exists.)" >&2
+  echo "  Every Solace Architect plugin imports it at module load; without it" >&2
+  echo "  'sam plugin add' would fail with 'Plugin module not found'." >&2
+  echo >&2
+  echo "  Fix from the monorepo root:" >&2
+  echo "    pip install -e ./solace-architect-core/" >&2
+  echo "  Or use the wrapper (recommended — handles cleanup of corrupted state):" >&2
+  echo "    ./update.sh" >&2
+  echo >&2
+  exit 2
+fi
+
 # Clear pip's wheel cache for this package so a same-version commit on the
 # same ref actually re-downloads. Failures here are non-fatal (cache might
 # not exist, or pip might be too old to support `cache remove`).
-pip cache remove "${plugin//-/_}*" >/dev/null 2>&1 || true
+"$PIP" cache remove "${plugin//-/_}*" >/dev/null 2>&1 || true
 
-pip install --force-reinstall --no-deps "$url"
+"$PIP" install --force-reinstall --no-deps "$url"
 
 if [ "$skip_add" = "0" ]; then
   # `sam plugin add` writes <cwd>/configs/<kind>/<plugin>.yaml. If we run it
@@ -80,13 +125,19 @@ if [ "$skip_add" = "0" ]; then
     echo "  (The pip install above already succeeded; the package is in the venv.)" >&2
     exit 2
   fi
+  if [ -z "$SAM_BIN" ]; then
+    echo >&2
+    echo "✗ 'sam' CLI not found (neither in \$SA_VENV_BIN nor on PATH)." >&2
+    echo "  Install with: $PIP install solace-agent-mesh" >&2
+    exit 3
+  fi
   echo "→ re-registering '${plugin}' as a SAM component in $(pwd)/configs/"
-  sam plugin add "$plugin" --plugin "$plugin"
+  "$SAM_BIN" plugin add "$plugin" --plugin "$plugin"
 fi
 
 # Sanity check: show where the package landed + mtime of a key file
 module_name="${plugin//-/_}"
-loc=$(python -c "import importlib, pathlib; m = importlib.import_module('${module_name}'); print(pathlib.Path(m.__file__).parent)" 2>/dev/null || echo "")
+loc=$("$PY" -c "import importlib, pathlib; m = importlib.import_module('${module_name}'); print(pathlib.Path(m.__file__).parent)" 2>/dev/null || echo "")
 if [ -n "$loc" ]; then
   echo "✓ installed at: $loc"
   for f in component.py app.py; do

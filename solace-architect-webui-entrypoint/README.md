@@ -44,7 +44,7 @@ SAM_PLUGIN_INSTALL_COMMAND="pip install --force-reinstall --no-deps {package}" \
   sam plugin install git+https://github.com/solacecommunity/solace-agent-mesh-plugins.git#subdirectory=solace-architect-webui-entrypoint
 ```
 
-For refreshing **all** SA plugins (this entrypoint plus every agent) in one go, the monorepo ships a wrapper at the root: `./update.sh <sam-dir>`. See the monorepo's README "Maintenance scripts" section. Same effect, one command.
+For refreshing **all** SA plugins (this entrypoint plus every agent) in one go, the monorepo ships a wrapper at the root: `./sa-plugins-install.sh <sam-dir>`. See the monorepo's README "Maintenance scripts" section. Same effect, one command.
 
 ### From the Community plugins catalog (once registered)
 
