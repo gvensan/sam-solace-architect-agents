@@ -176,6 +176,31 @@ export function App() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
+  // Cross-tab "is the visualizer open?" signal. The dashboard at / reads this
+  // key to disable its sidebar "Live View" link while a visualizer tab is
+  // alive. Heartbeat every 3s; dashboard considers stale after ~8s. Cleared on
+  // beforeunload (best-effort — browser may throttle) so the dashboard
+  // re-enables quickly when the tab closes.
+  useEffect(() => {
+    const KEY = "solace-architect.visualizer-alive";
+    const writeBeat = () => {
+      try {
+        localStorage.setItem(KEY, JSON.stringify({ ts: Date.now() }));
+      } catch { /* ignore quota / private-mode errors */ }
+    };
+    writeBeat();
+    const id = window.setInterval(writeBeat, 3000);
+    const clear = () => {
+      try { localStorage.removeItem(KEY); } catch { /* ignore */ }
+    };
+    window.addEventListener("beforeunload", clear);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("beforeunload", clear);
+      clear();
+    };
+  }, []);
+
   useEffect(() => {
     return () => {
       simHandleRef.current?.stop();

@@ -338,6 +338,53 @@
     }
   });
 
+  // Cross-tab heartbeat: the visualizer (loaded at /visualizer in a separate
+  // tab) writes solace-architect.visualizer-alive every 3s while open and
+  // clears it on beforeunload. We treat a beat fresher than 8s as "open".
+  // Used to disable the sidebar Live View link while a visualizer tab is up.
+  const VIZ_ALIVE_KEY = "solace-architect.visualizer-alive";
+  const VIZ_ALIVE_TTL_MS = 8000;
+  function isVisualizerOpen() {
+    try {
+      const raw = localStorage.getItem(VIZ_ALIVE_KEY);
+      if (!raw) return false;
+      const { ts } = JSON.parse(raw);
+      return typeof ts === "number" && (Date.now() - ts) < VIZ_ALIVE_TTL_MS;
+    } catch {
+      return false;
+    }
+  }
+  function applyVisualizerOpenState() {
+    const vizLink = document.getElementById("visualizer-link");
+    if (!vizLink) return;
+    if (isVisualizerOpen()) {
+      vizLink.classList.add("disabled");
+      vizLink.setAttribute("aria-disabled", "true");
+      vizLink.setAttribute("title", "Live View is already open in another tab");
+      vizLink.removeAttribute("target");
+    } else {
+      vizLink.classList.remove("disabled");
+      vizLink.removeAttribute("aria-disabled");
+      vizLink.removeAttribute("title");
+      vizLink.setAttribute("target", "_blank");
+    }
+  }
+  // React immediately to other-tab activity (open/close of the visualizer).
+  window.addEventListener("storage", (e) => {
+    if (e.key === VIZ_ALIVE_KEY) applyVisualizerOpenState();
+  });
+  // Catch stale heartbeats (visualizer tab crashed without firing beforeunload).
+  window.setInterval(applyVisualizerOpenState, 4000);
+  // Intercept clicks: a disabled link should swallow the click instead of
+  // navigating, to avoid focus-stealing or "blank tab opens then closes".
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest && e.target.closest("#visualizer-link");
+    if (a && a.classList.contains("disabled")) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, true);
+
   async function render() {
     clearProgressAutoRefresh();  // any navigation cancels the timer
     const path = currentPath();
@@ -364,7 +411,8 @@
     // Diagnostics → Live View. Always available (even with no active
     // project); when a project is active, scope the visualizer to that
     // engagement via the ?engagement= query param so it filters A2A
-    // traffic client-side.
+    // traffic client-side. Disabled while a visualizer tab is already
+    // open (detected via the localStorage heartbeat it writes).
     const liveNav = document.getElementById("live-nav");
     const vizLink = document.getElementById("visualizer-link");
     if (liveNav && vizLink) {
@@ -372,6 +420,7 @@
       vizLink.href = eid
         ? `/visualizer?engagement=${encodeURIComponent(eid)}`
         : `/visualizer`;
+      applyVisualizerOpenState();
     }
 
     // Chat is no longer project-gated — it targets any agent on the SAM mesh.

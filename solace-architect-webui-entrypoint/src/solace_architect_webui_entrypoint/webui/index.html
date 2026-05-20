@@ -86,10 +86,13 @@
         </div>
 
         <!-- Live View (visualizer) — separate section because it's a full
-             page navigation (Preact app at /visualizer), not an in-SPA view. -->
+             page navigation (Preact app at /visualizer), not an in-SPA view.
+             Opens in a new tab so the user keeps the dashboard view in
+             place; closing the tab tears down the broker subscription. -->
         <div id="live-nav" class="sidebar-section live-nav hidden">
           <div class="sidebar-section-title">Diagnostics</div>
-          <a id="visualizer-link" href="/visualizer" class="nav-link">Live View</a>
+          <a id="visualizer-link" href="/visualizer"
+             class="nav-link" target="_blank" rel="noopener noreferrer">Live View</a>
         </div>
 
         <div class="sidebar-spacer"></div>
