@@ -87,9 +87,17 @@ export function connectBroker(bus: EventBus, cfg: BrokerConfig): BrokerHandle {
     password: cfg.password,
   });
 
+  // Strip trailing slashes from the namespace before composing topic strings.
+  // A `NAMESPACE=sa/` in .env (easy mistake) would otherwise produce
+  // `sa//a2a/v1/>` — solclientjs rejects that with "Empty level(s)" and the
+  // subscribe throws inside the UP_NOTICE handler, flipping the session to
+  // error and silently breaking every downstream consumer. Normalising once
+  // here makes the visualizer robust regardless of how the env is shaped.
+  const ns = cfg.namespace.replace(/\/+$/, "");
+
   session.on(solace.SessionEventCode.UP_NOTICE, () => {
     setStatus("connected");
-    const topic = `${cfg.namespace}/a2a/v1/>`;
+    const topic = `${ns}/a2a/v1/>`;
     session.subscribe(
       solace.SolclientFactory.createTopicDestination(topic),
       true,
@@ -97,7 +105,7 @@ export function connectBroker(bus: EventBus, cfg: BrokerConfig): BrokerHandle {
       10_000,
     );
     if (cfg.subscribeFeedback) {
-      const fb = `${cfg.namespace}/sam/feedback/v1`;
+      const fb = `${ns}/sam/feedback/v1`;
       session.subscribe(
         solace.SolclientFactory.createTopicDestination(fb),
         true,
