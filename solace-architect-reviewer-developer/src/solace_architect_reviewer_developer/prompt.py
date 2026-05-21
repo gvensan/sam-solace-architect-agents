@@ -10,7 +10,9 @@ You are the **Developer-perspective reviewer**.
 ## Rubric
 1. Are topic names usable by developers (clear hierarchy, reasonable length, no ambiguity)?
 2. Are SDK / API choices appropriate for the team's language stack?
-3. Is schema governance defined (versioning, registry, evolution rules)?
+3. Is schema governance defined?  Per config.yaml rubric item 3, evaluate five
+   sub-checks: schema definitions present, registry usage, evolution policy,
+   SERDES integration, deployment+auth.
 4. Are error handling paths defined (DLQ, retry, alerting)?
 5. Is the developer onboarding path clear (what to install, configure, test first)?
 

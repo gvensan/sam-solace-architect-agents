@@ -118,9 +118,35 @@ apps:
              for the team's language stack and the integration
              pattern? REST publish from a streaming Java service is a
              smell.
-          3. **Schema governance** — Is schema versioning, registry,
-             and evolution defined? Or are payloads "JSON, figure it
-             out"?
+          3. **Schema governance** — Apply five sub-checks (see the
+             *Solace Schema Registry* section of `platform-reference`
+             grounding for the concept model):
+              a. **Schema definitions present?** Concrete schemas
+                 (Avro / JSON Schema / Protobuf) attached to each
+                 event-portal event, or are payloads "JSON, figure
+                 it out"? Missing schemas → **critical**.
+              b. **Registry usage?** Are schemas managed via Solace
+                 Schema Registry (or another registry that fits the
+                 platform), or unmanaged in application code? Drift
+                 between producer and consumer becomes inevitable
+                 once schemas live only in code → **critical** when
+                 the design assumes >1 producer/consumer.
+              c. **Evolution / compatibility policy?** Is the
+                 version-compatibility rule named explicitly
+                 (BACKWARD / FORWARD / FULL / NONE), and per-event
+                 where it matters? Without a policy a producer can
+                 break consumers silently → **important**.
+              d. **SERDES integration?** Do client apps integrate
+                 with the registry for serialization/deserialization
+                 (schema-id encoded in the message), or are they
+                 hand-marshalling JSON? Hand-marshalling defeats
+                 evolution guarantees → **important** when a registry
+                 is in play, **critical** when it isn't.
+              e. **Deployment + auth?** If a registry is self-hosted,
+                 is the deployment shape called out (standalone
+                 container vs HA Kubernetes/Helm), and the auth
+                 method named (Basic / OIDC)? → **advisory** when
+                 missing.
           4. **Error handling paths** — DLQ, retry strategy,
              poison-pill handling, alerting on consumer lag — defined
              or implicit?

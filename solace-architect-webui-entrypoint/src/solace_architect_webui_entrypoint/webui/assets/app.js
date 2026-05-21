@@ -144,6 +144,21 @@
   // Current user — populate header chip + redirect to /login if anon and required
   // ============================================================================
   let currentUser = null;
+
+  // Single source of truth for "session expired — bounce to login". Preserves
+  // the current path as ?return_to= so the user lands back where they were
+  // after re-authenticating. Idempotent (safe to call multiple times; only
+  // the first call navigates).
+  let _redirectingToLogin = false;
+  function redirectToLoginPreservingPath() {
+    if (_redirectingToLogin) return;
+    _redirectingToLogin = true;
+    // Login page reads ?next= and posts it back to /api/auth/login as `next`,
+    // which the server uses to compute the post-login redirect target.
+    const ret = window.location.pathname + window.location.search;
+    window.location.href = "/login?next=" + encodeURIComponent(ret);
+  }
+
   async function loadCurrentUser() {
     try {
       const r = await fetch("/api/auth/me");
@@ -158,7 +173,7 @@
         logoutBtn?.classList.remove("hidden");
         settingsLink?.classList.remove("hidden");
       } else if (d.require_auth) {
-        window.location.href = "/login";
+        redirectToLoginPreservingPath();
         return null;
       } else {
         chip.textContent = "anonymous (dev)";
@@ -172,6 +187,42 @@
       return null;
     }
   }
+
+  // Periodic auth check — catches session expiry while the user is sitting
+  // on the dashboard. Without this, the first sign that auth has lapsed is
+  // a failed chat POST with a generic 'translate failed' error. 60s polls
+  // are cheap (one no-store JSON call) and stop the silent-death class of
+  // bug where SSE has died but the UI still claims connected.
+  function startAuthHeartbeat() {
+    setInterval(async () => {
+      try {
+        const r = await fetch("/api/auth/me", { cache: "no-store" });
+        if (!r.ok) return;
+        const d = await r.json();
+        // Session lapsed (auth required but we're no longer authenticated).
+        if (d.require_auth && !d.authenticated) {
+          redirectToLoginPreservingPath();
+        }
+      } catch (_) { /* network blip — try again next tick */ }
+    }, 60_000);
+  }
+  startAuthHeartbeat();
+
+  // Wrap window.fetch to detect 401 on any /api/* call and bounce to login
+  // immediately rather than letting the calling code show a cryptic error.
+  // Only triggers for same-origin /api/ paths so external fetches (e.g. by
+  // future widgets) keep their own error semantics.
+  const _nativeFetch = window.fetch.bind(window);
+  window.fetch = async function(resource, init) {
+    const res = await _nativeFetch(resource, init);
+    try {
+      const url = typeof resource === "string" ? resource : (resource && resource.url) || "";
+      if (res.status === 401 && url.startsWith("/api/")) {
+        redirectToLoginPreservingPath();
+      }
+    } catch (_) { /* defensive — don't let the wrapper mask the response */ }
+    return res;
+  };
 
   // Logout button — calls window.__logout (defined later) on click
   document.getElementById("logout-btn")?.addEventListener("click", async () => {
@@ -338,53 +389,6 @@
     }
   });
 
-  // Cross-tab heartbeat: the visualizer (loaded at /visualizer in a separate
-  // tab) writes solace-architect.visualizer-alive every 3s while open and
-  // clears it on beforeunload. We treat a beat fresher than 8s as "open".
-  // Used to disable the sidebar Live View link while a visualizer tab is up.
-  const VIZ_ALIVE_KEY = "solace-architect.visualizer-alive";
-  const VIZ_ALIVE_TTL_MS = 8000;
-  function isVisualizerOpen() {
-    try {
-      const raw = localStorage.getItem(VIZ_ALIVE_KEY);
-      if (!raw) return false;
-      const { ts } = JSON.parse(raw);
-      return typeof ts === "number" && (Date.now() - ts) < VIZ_ALIVE_TTL_MS;
-    } catch {
-      return false;
-    }
-  }
-  function applyVisualizerOpenState() {
-    const vizLink = document.getElementById("visualizer-link");
-    if (!vizLink) return;
-    if (isVisualizerOpen()) {
-      vizLink.classList.add("disabled");
-      vizLink.setAttribute("aria-disabled", "true");
-      vizLink.setAttribute("title", "Live View is already open in another tab");
-      vizLink.removeAttribute("target");
-    } else {
-      vizLink.classList.remove("disabled");
-      vizLink.removeAttribute("aria-disabled");
-      vizLink.removeAttribute("title");
-      vizLink.setAttribute("target", "_blank");
-    }
-  }
-  // React immediately to other-tab activity (open/close of the visualizer).
-  window.addEventListener("storage", (e) => {
-    if (e.key === VIZ_ALIVE_KEY) applyVisualizerOpenState();
-  });
-  // Catch stale heartbeats (visualizer tab crashed without firing beforeunload).
-  window.setInterval(applyVisualizerOpenState, 4000);
-  // Intercept clicks: a disabled link should swallow the click instead of
-  // navigating, to avoid focus-stealing or "blank tab opens then closes".
-  document.addEventListener("click", (e) => {
-    const a = e.target.closest && e.target.closest("#visualizer-link");
-    if (a && a.classList.contains("disabled")) {
-      e.preventDefault();
-      e.stopPropagation();
-    }
-  }, true);
-
   async function render() {
     clearProgressAutoRefresh();  // any navigation cancels the timer
     const path = currentPath();
@@ -406,21 +410,6 @@
       });
     } else {
       projectNav.classList.add("hidden");
-    }
-
-    // Diagnostics → Live View. Always available (even with no active
-    // project); when a project is active, scope the visualizer to that
-    // engagement via the ?engagement= query param so it filters A2A
-    // traffic client-side. Disabled while a visualizer tab is already
-    // open (detected via the localStorage heartbeat it writes).
-    const liveNav = document.getElementById("live-nav");
-    const vizLink = document.getElementById("visualizer-link");
-    if (liveNav && vizLink) {
-      liveNav.classList.remove("hidden");
-      vizLink.href = eid
-        ? `/visualizer?engagement=${encodeURIComponent(eid)}`
-        : `/visualizer`;
-      applyVisualizerOpenState();
     }
 
     // Chat is no longer project-gated — it targets any agent on the SAM mesh.
@@ -567,10 +556,18 @@
         // validated design before the final package is assembled.
         const eventPortalStatus = lifecycle?.steps?.["event-portal"]?.status || "NOT_STARTED";
         const eventPortalNote = lifecycle?.steps?.["event-portal"]?.note || "";
-        const eventPortalDone = eventPortalStatus === "DONE" || eventPortalStatus === "DONE_WITH_CONCERNS";
+        // SKIPPED counts as "done for advancement purposes" — the CTA chain
+        // should hop over it just like a DONE phase. Without this, opt-out
+        // engagements (intake.preferences.provision_event_portal=false)
+        // would stall at "Start Event Portal" forever because the lifecycle
+        // would report event-portal as NOT_STARTED/SKIPPED, never DONE.
+        const eventPortalSkipped = eventPortalStatus === "SKIPPED";
+        const eventPortalDone = eventPortalStatus === "DONE"
+          || eventPortalStatus === "DONE_WITH_CONCERNS"
+          || eventPortalSkipped;
         const hasEventPortalArtifact = artifacts.some(a => a.startsWith("event-portal/"));
         const eventPortalInProgress = !eventPortalDone && (
-          (eventPortalStatus !== "NOT_STARTED")
+          (eventPortalStatus !== "NOT_STARTED" && eventPortalStatus !== "SKIPPED")
           || hasEventPortalArtifact
         );
 
@@ -603,6 +600,48 @@
         if (eventPortalDone) completedSteps.add("event-portal");
         if (blueprintDone) completedSteps.add("blueprint");
 
+        // Steps the agent has flagged as "waiting for the user" via
+        // set_step_status(status="NEEDS_CONTEXT"). Visually distinct from
+        // both "active" (running) and "not started" so a glance at the
+        // banner tells the user where their attention is needed.
+        const needsContextSteps = new Set();
+        const _isNeedsCtx = (s) => s?.status === "NEEDS_CONTEXT";
+        if (_isNeedsCtx(lifecycle?.steps?.discovery))    needsContextSteps.add("discovery");
+        if (_isNeedsCtx(lifecycle?.steps?.design))       needsContextSteps.add("design");
+        if (_isNeedsCtx(lifecycle?.steps?.review))       needsContextSteps.add("review");
+        if (_isNeedsCtx(lifecycle?.steps?.validation))   needsContextSteps.add("validation");
+        if (_isNeedsCtx(lifecycle?.steps?.["event-portal"])) needsContextSteps.add("event-portal");
+        if (_isNeedsCtx(lifecycle?.steps?.blueprint))    needsContextSteps.add("blueprint");
+
+        // Steps the routing engine skipped (e.g. event-portal opt-out via
+        // preferences.provision_event_portal=false). Rendered muted so the
+        // user understands "intentionally skipped" vs "not yet reached".
+        // Two sources:
+        //   1. stats.skip_reasons — routing-derived (skill-routing.yaml + brief)
+        //   2. lifecycle.steps[X].status === "SKIPPED" — explicit write
+        //      (e.g. intake_submit writes event-portal SKIPPED on opt-out
+        //      so the dashboard knows immediately, even before any agent
+        //      run touches the routing layer).
+        const skippedSteps = new Set();
+        const _bannerStepIds = new Set([
+          "discovery", "design", "review", "validation", "event-portal", "blueprint",
+        ]);
+        for (const sr of (stats.skip_reasons || [])) {
+          if (sr?.step && _bannerStepIds.has(sr.step)) skippedSteps.add(sr.step);
+        }
+        for (const stepId of _bannerStepIds) {
+          if (lifecycle?.steps?.[stepId]?.status === "SKIPPED") skippedSteps.add(stepId);
+        }
+
+        // Phases that returned BLOCKED — Validation typically, but any
+        // agent can mark its step BLOCKED when blocking open-items remain
+        // unresolved. The banner renders these with a red border + ⛔ icon
+        // and the welcome card refuses to chain advancement past them.
+        const blockedSteps = new Set();
+        for (const stepId of _bannerStepIds) {
+          if (lifecycle?.steps?.[stepId]?.status === "BLOCKED") blockedSteps.add(stepId);
+        }
+
         // Blocking open-items affecting Blueprint — typically recorded by
         // SAValidationAgent with affecting_step="blueprint". When any are
         // open, Start Blueprint must be disabled. Without this gate, the
@@ -626,7 +665,15 @@
 
         root.innerHTML = `
           <h1>Progress</h1>
-          ${renderProgressBanner({ active: activeStepId, completed: completedSteps })}
+          ${renderProgressBanner({
+            active: activeStepId,
+            completed: completedSteps,
+            needsContext: needsContextSteps,
+            skipped: skippedSteps,
+            blocked: blockedSteps,
+            designScopeProgress: lifecycle?.steps?.design?.scope_progress || null,
+            designApplicableScopes: _deriveApplicableDesignScopes(lifecycle, stats),
+          })}
           ${cta}
 
           <!-- Compact engagement-state tiles. Status is the first tile (Progress only);
@@ -1033,7 +1080,39 @@
   // Each step gets a hand-rolled inline SVG so we don't depend on any
   // external icon set. State drives the styling: completed = checkmark
   // tint, active = accent border + glow, pending = muted.
-  function renderProgressBanner({ active, completed }) {
+  // Canonical design scope order. The "event-portal" scope here is the
+  // DESIGN-time model (always applicable when Design runs); not to be
+  // confused with the lifecycle-level event-portal PHASE (opt-in
+  // provisioning). Kept aligned with SADomainAgent's own scope list.
+  const DESIGN_SCOPE_ORDER = [
+    "topic-design", "broker-select", "protocol-select", "integration",
+    "mesh-design", "ha-dr", "sam-design", "event-portal", "migration",
+  ];
+
+  // Derive which design scopes are applicable to this engagement from the
+  // routing engine's skip_reasons (the canonical "scope not applicable per
+  // brief" signal — emitted by intake_preview's plan computation). Returns
+  // a Set of applicable scope ids; null when we have no skip signal at all
+  // (in which case the banner falls back to "all 9 applicable" — never
+  // misleadingly hides a scope).
+  function _deriveApplicableDesignScopes(lifecycle, stats) {
+    const skipReasons = stats?.skip_reasons;
+    if (!Array.isArray(skipReasons)) return null;
+    const skipped = new Set(skipReasons.map(sr => sr?.step).filter(Boolean));
+    if (!skipped.size) return new Set(DESIGN_SCOPE_ORDER);    // none skipped → all applicable
+    // The skip_reasons set may include lifecycle-PHASE entries too (e.g.
+    // "event-portal" when the PHASE is opt-out). Filter to design scopes
+    // only — the lifecycle event-portal phase being skipped doesn't mean
+    // the design-time event-portal model scope is skipped.
+    const designSkipped = new Set([...skipped].filter(s => DESIGN_SCOPE_ORDER.includes(s)));
+    return new Set(DESIGN_SCOPE_ORDER.filter(s => !designSkipped.has(s)));
+  }
+
+  function renderProgressBanner({ active, completed, needsContext, skipped, blocked,
+                                  designScopeProgress, designApplicableScopes }) {
+    needsContext = needsContext || new Set();
+    skipped = skipped || new Set();
+    blocked = blocked || new Set();
     // Lifecycle steps shown across the top of the Progress view.
     // Order matches PHASE_NEXT: intake → discovery → design → review →
     // validation → event-portal → blueprint.
@@ -1046,15 +1125,37 @@
       { id: "event-portal", label: "Event Portal", svg: "M4 12a8 8 0 1 0 16 0 8 8 0 0 0-16 0zM12 4v8l5 3" },
       { id: "blueprint",    label: "Blueprint",    svg: "M4 4h16v16H4zM4 9h16M9 4v16" },
     ];
+    // Restart is only meaningful for phases that have started (active OR
+    // done). NOT_STARTED phases have nothing to clean up. Intake is a UI
+    // form, not an agent phase — restart there means editing the form,
+    // not running a wipe; we omit it.
     return `
       <div class="progress-banner" role="navigation" aria-label="Engagement lifecycle">
         ${steps.map(s => {
           const isActive = s.id === active;
           const isDone = completed.has(s.id);
-          const cls = "progress-step "
-            + (isActive ? "active " : "")
-            + (isDone ? "done " : "")
-            + ((!isActive && !isDone) ? "pending " : "");
+          const isBlocked = blocked.has(s.id);
+          const isNeedsCtx = needsContext.has(s.id);
+          const isSkipped = skipped.has(s.id);
+          // Mutually-exclusive primary state, in priority order:
+          //   blocked > done > needs-context > active > skipped > pending.
+          // BLOCKED is highest priority because it's a hard stop the user
+          // must resolve — surfacing it loudly is the whole point.
+          // Visual semantics: blocked (red border + ⛔), done (accent-green
+          // ✓), needs-context (amber 'Waiting for you'), active (current
+          // step), skipped (muted strikethrough), pending (default neutral).
+          let primary;
+          if (isBlocked) primary = "blocked";
+          else if (isDone) primary = "done";
+          else if (isNeedsCtx) primary = "needs-context";
+          else if (isActive) primary = "active";
+          else if (isSkipped) primary = "skipped";
+          else primary = "pending";
+          const cls = `progress-step ${primary}`;
+          // Skipped steps can't be restarted (they never ran); intake never
+          // has a Restart (it's a form). Otherwise active/done/needs-context
+          // can all be cleaned up via Restart.
+          const canRestart = (isActive || isDone || isNeedsCtx) && s.id !== "intake";
           return `
             <div class="${cls.trim()}" data-step="${s.id}">
               <div class="progress-icon">
@@ -1066,10 +1167,84 @@
                 ${isDone ? `<span class="progress-check" aria-hidden="true">✓</span>` : ""}
               </div>
               <div class="progress-label">${s.label}</div>
+              ${s.id === "design" && designScopeProgress && (isActive || isDone)
+                ? _renderDesignScopeStrip(designScopeProgress, designApplicableScopes, eid)
+                : ""}
+              ${canRestart
+                ? `<button type="button" class="progress-restart-btn"
+                          data-restart-phase="${s.id}"
+                          title="Restart ${s.label} — cascade-wipe and re-run">
+                     ↻ Restart
+                   </button>`
+                : ""}
             </div>`;
         }).join("")}
       </div>`;
   }
+
+  // Sub-progress strip for the Design tile. Renders a dot per applicable
+  // design scope, coloured by status:
+  //   ●  done (in scope_progress.done[])
+  //   ◐  current (== scope_progress.next)
+  //   ○  pending (applicable but not yet reached)
+  //   —  skipped (not applicable for this engagement per the brief)
+  // The "N/M" count above the dots gives the user a quick "how far along"
+  // signal without parsing the dots. Clicks on done dots navigate to that
+  // scope's artifacts page.
+  function _renderDesignScopeStrip(scopeProgress, applicable, eid) {
+    const done = new Set(scopeProgress?.done || []);
+    const next = scopeProgress?.next || null;
+    // If we have an applicable-set, use it; else assume all are applicable
+    // (conservative — never falsely hide a scope just because we couldn't
+    // confidently derive applicability).
+    const applies = applicable instanceof Set
+      ? (id) => applicable.has(id)
+      : () => true;
+    const dots = DESIGN_SCOPE_ORDER.map(scope => {
+      let cls = "scope-dot";
+      let glyph = "○";
+      let title = `${scope.replace(/-/g, " ")} — pending`;
+      let href = null;
+      if (!applies(scope)) {
+        cls += " skipped"; glyph = "—";
+        title = `${scope.replace(/-/g, " ")} — not applicable for this engagement`;
+      } else if (done.has(scope)) {
+        cls += " done"; glyph = "●";
+        title = `${scope.replace(/-/g, " ")} — done`;
+        if (eid) href = `/projects/${encodeURIComponent(eid)}/artifacts?category=${encodeURIComponent(scope)}`;
+      } else if (scope === next) {
+        cls += " current"; glyph = "◐";
+        title = `${scope.replace(/-/g, " ")} — current scope`;
+      }
+      const inner = `<span class="${cls}" title="${title}" data-scope="${scope}" aria-label="${title}">${glyph}</span>`;
+      return href ? `<a href="${href}" data-route>${inner}</a>` : inner;
+    }).join("");
+    const total = applicable instanceof Set
+      ? [...applicable].filter(s => DESIGN_SCOPE_ORDER.includes(s)).length
+      : DESIGN_SCOPE_ORDER.length;
+    const doneApplicable = DESIGN_SCOPE_ORDER
+      .filter(s => done.has(s) && applies(s)).length;
+    return `
+      <div class="design-scope-strip">
+        <span class="design-scope-count">${doneApplicable}/${total}</span>
+        <span class="design-scope-dots">${dots}</span>
+      </div>`;
+  }
+
+  // Phase-tile Restart click handler — delegated from the document so it
+  // picks up the buttons regardless of which view re-rendered the banner.
+  // Routes to the right modal per phase id.
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest && e.target.closest(".progress-restart-btn");
+    if (!btn) return;
+    e.preventDefault();
+    const phaseId = btn.getAttribute("data-restart-phase");
+    const eid = currentProjectId();
+    if (!eid) return;
+    if (phaseId === "discovery") openRestartDiscoveryModal(eid);
+    else if (phaseId === "design") openRestartDesignModal(eid);
+    else openRestartPhaseModal(phaseId, eid);
+  });
 
   // One contextual CTA on the Progress page, always present, tells the
   // user what to do next based on lifecycle state. Resolves the previous
@@ -1666,6 +1841,120 @@
     });
   }
 
+  // Generic Restart-phase modal — used for Review, Validation, Event Portal,
+  // and Blueprint (Discovery + Design have their own dedicated openers above
+  // with phase-specific copy). The cascade-downstream order:
+  //   review       → wipes review + validation + event-portal + blueprint
+  //   validation   → wipes validation + event-portal + blueprint
+  //   event-portal → wipes event-portal + blueprint
+  //   blueprint    → wipes blueprint only (terminal step)
+  //
+  // Every restart goes through the same DELETE /api/engagements/{eid}/{phase}
+  // endpoint and clears the phase-hint dedup keys for the wiped phases so
+  // the in-chat phase-handoff card can re-fire after a fresh re-run.
+  const _PHASE_LABELS = {
+    "review": "Review",
+    "validation": "Validation",
+    "event-portal": "Event Portal",
+    "blueprint": "Blueprint",
+  };
+  const _PHASE_RESTART_COPY = {
+    "review": {
+      bullets: [
+        "delete every reviewer narrative under <code>reviews/</code>",
+        "empty <code>meta/findings.yaml</code> (a fresh review re-creates them)",
+        "supersede review-deferred open-items",
+        "clear the Review entry in <code>meta/engagement-status.yaml</code>",
+      ],
+      cascadeNote: "Validation, Event Portal, and Blueprint outputs are <strong>also wiped</strong> because they derive from the Review findings.",
+      cascadeSteps: ["review", "validation", "event-portal", "blueprint"],
+    },
+    "validation": {
+      bullets: [
+        "delete <code>validation/validation-report.md</code> and the machine YAML",
+        "supersede validation-source open-items",
+        "clear the Validation entry in <code>meta/engagement-status.yaml</code>",
+      ],
+      cascadeNote: "Event Portal and Blueprint outputs are <strong>also wiped</strong> because they depend on Validation passing.",
+      cascadeSteps: ["validation", "event-portal", "blueprint"],
+    },
+    "event-portal": {
+      bullets: [
+        "delete <code>event-portal/plan.yaml</code>, <code>provisioned.yaml</code>, <code>provisioning-report.md</code>, and <code>asyncapi/</code>",
+        "clear the Event Portal entry in <code>meta/engagement-status.yaml</code>",
+      ],
+      cascadeNote: "Blueprint output is <strong>also wiped</strong>. The design-time <code>event-portal/event-portal-model.yaml</code> is preserved (it's a Design output, not a provisioning output).",
+      cascadeSteps: ["event-portal", "blueprint"],
+    },
+    "blueprint": {
+      bullets: [
+        "delete <code>blueprint/architecture.md</code>, <code>runbook.md</code>, <code>diagrams/</code>, <code>packs/</code>",
+        "delete <code>exports/engagement-package.zip</code>",
+        "clear the Blueprint entry in <code>meta/engagement-status.yaml</code>",
+      ],
+      cascadeNote: "Blueprint is the terminal step — nothing else cascades.",
+      cascadeSteps: ["blueprint"],
+    },
+  };
+
+  function openRestartPhaseModal(phaseId, eid) {
+    const label = _PHASE_LABELS[phaseId];
+    const copy = _PHASE_RESTART_COPY[phaseId];
+    if (!label || !copy) {
+      console.warn("openRestartPhaseModal: unknown phase", phaseId);
+      return;
+    }
+    const inputId = `restart-${phaseId}-confirm-input`;
+    const btnId = `restart-${phaseId}-confirm-btn`;
+    openModal(`
+      <div class="modal-section">
+        <h2>Restart ${escapeHtml(label)} for <code>${escapeHtml(eid)}</code>?</h2>
+        <p>This will:</p>
+        <ul style="margin: 6px 0 12px 18px; font-size: 13px; line-height: 1.6;">
+          ${copy.bullets.map(b => `<li>${b}</li>`).join("")}
+        </ul>
+        <p>${copy.cascadeNote}</p>
+        <p style="margin-top: 8px;">Earlier phases (intake, discovery, design, and any phases before
+        ${escapeHtml(label)}) are <strong>not</strong> touched. Recorded decisions in
+        <code>meta/decisions.yaml</code> are <strong>preserved</strong>.</p>
+        <p style="margin-top: 12px;">Type the project id <code>${escapeHtml(eid)}</code> to confirm:</p>
+        <input id="${inputId}" type="text" autocomplete="off"
+               style="width: 100%; padding: 8px 10px; font-family: 'Space Mono', monospace;
+                      font-size: 13px; border: 1px solid var(--border); border-radius: 4px;
+                      margin-top: 6px;">
+        <div class="modal-actions" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px;">
+          <button class="cta-btn cta-btn-secondary" data-modal-close>Cancel</button>
+          <button id="${btnId}" class="cta-btn cta-btn-danger" disabled>Restart ${escapeHtml(label)}</button>
+        </div>
+      </div>`, { focus: `#${inputId}` });
+
+    const input = document.getElementById(inputId);
+    const btn = document.getElementById(btnId);
+    input?.addEventListener("input", () => { btn.disabled = input.value.trim() !== eid; });
+    btn?.addEventListener("click", async () => {
+      btn.disabled = true;
+      btn.textContent = "Restarting…";
+      try {
+        const res = await fetch(
+          `/api/engagements/${encodeURIComponent(eid)}/${encodeURIComponent(phaseId)}`,
+          { method: "DELETE" },
+        );
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        // Mirror the backend cascade on the frontend — clear hint dedup
+        // keys for every wiped phase so their handoff cards re-fire on
+        // the next completion.
+        copy.cascadeSteps.forEach(step => _clearPhaseHint(eid, step));
+        setAutoMode(eid, false);
+        closeModal();
+        render();
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = `Restart ${label}`;
+        alert(`Restart failed: ${err.message}`);
+      }
+    });
+  }
+
   // ============================================================================
   // Modal helpers — single shared #modal-root, used for confirm/forms/etc.
   // ============================================================================
@@ -2098,14 +2387,36 @@
   const chatInput = document.getElementById("chat-input");
 
   // Chat history is persisted per project in localStorage. The session id is
-  // derived deterministically from the active project — `chat-<engagement_id>`
-  // for a project context, `chat-global` when no project is active. Each
-  // project's log lives at `solace-architect-chat-log:chat-<eid>`; loading is
-  // explicit (user clicks "Load history") so visiting a project doesn't dump
-  // stale conversation in the user's face.
-  const CHAT_HISTORY_KEY = (sid) => `solace-architect-chat-log:${sid}`;
+  // derived from the active project PLUS a per-tab suffix — two tabs of the
+  // same project must NOT share an SSE stream, otherwise both browsers see
+  // an interleaved transcript and the agent receives messages from a session
+  // it can't disambiguate. sessionStorage is per-tab (unlike localStorage),
+  // so a refresh in the same tab keeps the same tab_id (Last-Event-Id replay
+  // still works), but a new tab gets a fresh one.
+  const TAB_ID_KEY = "solace-architect-tab-id";
+  function _tabId() {
+    let t = sessionStorage.getItem(TAB_ID_KEY);
+    if (!t) {
+      // Random 8-char suffix; collision space within one user's tabs is large
+      // enough that we don't bother with crypto-strength uniqueness.
+      t = ((window.crypto && window.crypto.randomUUID)
+            ? window.crypto.randomUUID().slice(0, 8)
+            : Math.random().toString(36).slice(2, 10));
+      sessionStorage.setItem(TAB_ID_KEY, t);
+    }
+    return t;
+  }
+  // History key strips the tab suffix so reopening a tab still finds the
+  // prior project's saved log. Two tabs running concurrently could clobber
+  // each other's writes — that's an accepted trade-off (per-tab persistence
+  // would lose history every tab close); the load-bearing fix is SSE
+  // isolation, which the per-tab session_id below delivers.
+  const CHAT_HISTORY_KEY = (sid) => {
+    const stripped = String(sid || "").replace(/-[a-z0-9]{4,}$/, "");
+    return `solace-architect-chat-log:${stripped}`;
+  };
   function deriveChatSessionId() {
-    return "chat-" + (currentProjectId() || "global");
+    return `chat-${currentProjectId() || "global"}-${_tabId()}`;
   }
   function loadChatHistory(sid) {
     try { return JSON.parse(localStorage.getItem(CHAT_HISTORY_KEY(sid)) || "[]"); }
@@ -2219,6 +2530,31 @@
     const discoveryInProgress = !discoveryDone && (hasDiscoveryBrief || openItemsCount > 0);
     const designStatus = lifecycle?.steps?.design?.status || "NOT_STARTED";
     const designDone = designStatus === "DONE" || designStatus === "DONE_WITH_CONCERNS";
+    // Resume-from-checkpoint: SADomainAgent writes `scope_progress` after
+    // each scope completes (record_scope_progress tool). When the user
+    // reopens an engagement mid-Design, this lets us offer "Resume from
+    // scope N" with the correct next-scope prime instead of restarting
+    // Design from scope 1. Persists across SAM restarts because the
+    // scope_progress is in meta/engagement-status.yaml on disk.
+    const designScopeProgress = lifecycle?.steps?.design?.scope_progress || null;
+    const designResumable = !designDone && designScopeProgress
+      && designScopeProgress.next
+      && Array.isArray(designScopeProgress.done)
+      && designScopeProgress.done.length > 0;
+
+    // BLOCKED gate — any phase in BLOCKED status halts CTA advancement.
+    // The agent that returned BLOCKED has recorded the underlying open
+    // items; the user has to resolve them (Open Items pane → Resolve)
+    // before Start Validation / Start Event Portal / Start Blueprint
+    // appears again. Find the first blocked phase in canonical order so
+    // we can name it in the message.
+    const _PHASE_ORDER_FOR_BLOCK_CHECK = ["discovery", "design", "review",
+                                          "validation", "event-portal", "blueprint"];
+    let blockedPhaseId = null;
+    for (const pid of _PHASE_ORDER_FOR_BLOCK_CHECK) {
+      if (lifecycle?.steps?.[pid]?.status === "BLOCKED") { blockedPhaseId = pid; break; }
+    }
+    const blockingOpenItemsCount = stats.open_items_blocking || 0;
 
     // Lifecycle steps in order — used to find current + next.
     const steps = [
@@ -2238,7 +2574,45 @@
     // before priming the message — important on the Discovery → Design
     // handoff so the user doesn't have to flip the dropdown manually.
     let action = null;
-    if (!hasIntake) {
+    // Engagement-complete short-circuit: every applicable phase is in a
+    // terminal state (DONE / DONE_WITH_CONCERNS / SKIPPED). Flip the
+    // welcome card to a "download the package" finisher rather than
+    // continuing to prompt for a next-phase start. Has to come before the
+    // BLOCKED check because a phase can land in BLOCKED with the engagement
+    // already complete (e.g. a late-recorded blocking open-item against a
+    // DONE phase) — but in practice the BLOCKED path is the wrong CTA at
+    // that point too; the user wants the package, not the resolve link.
+    // Recompute completion across all phases here so we don't fight with
+    // the per-phase variables computed above.
+    const _phaseIsTerminal = (status) =>
+      status === "DONE" || status === "DONE_WITH_CONCERNS" || status === "SKIPPED";
+    const _statusOf = (id) => lifecycle?.steps?.[id]?.status || "NOT_STARTED";
+    const _engagementComplete =
+      hasIntake
+      && _phaseIsTerminal(_statusOf("discovery"))
+      && _phaseIsTerminal(_statusOf("design"))
+      && _phaseIsTerminal(_statusOf("review"))
+      && _phaseIsTerminal(_statusOf("validation"))
+      && _phaseIsTerminal(_statusOf("event-portal"))
+      && _phaseIsTerminal(_statusOf("blueprint"));
+    if (_engagementComplete) {
+      action = {
+        label: "Download engagement package →",
+        href: `/api/engagements/${encodeURIComponent(eid)}/exports/zip`,
+        secondary: {
+          label: "Browse audience packs →",
+          href: `/projects/${encodeURIComponent(eid)}/export`,
+        },
+      };
+    } else if (blockedPhaseId) {
+      const blockedLabel = _PHASE_LABELS?.[blockedPhaseId]
+        || blockedPhaseId.replace(/-/g, " ");
+      action = {
+        label: `Resolve ${blockingOpenItemsCount || ""} blocking items first →`.replace(/\s+/g, " "),
+        href: `/projects/${encodeURIComponent(eid)}/open-items`,
+        blockedNote: `${blockedLabel} is BLOCKED — advancement is gated until blocking open items are resolved.`,
+      };
+    } else if (!hasIntake) {
       action = { label: "Open intake form →", href: `/intake/edit/${encodeURIComponent(eid)}` };
     } else if (!discoveryDone && !discoveryInProgress) {
       action = {
@@ -2255,6 +2629,30 @@
         label: "Continue Discovery →",
         agent: "SADiscoveryAgent",
         prime: "Continue discovery — ask the next question, or finalise the brief if all gaps are resolved.",
+      };
+    } else if (designResumable) {
+      // Resume-from-checkpoint — design is mid-stream with a recorded
+      // next scope. Build the per-scope kickoff via the same helper
+      // the auto-advance loop uses, so resuming after a SAM restart or
+      // browser-close produces the EXACT same agent prompt as a normal
+      // mid-engagement scope advance. Two buttons: Resume Interactive
+      // (default) and Resume Auto (continue auto-advance loop).
+      const next = designScopeProgress.next;
+      const done = designScopeProgress.done || [];
+      const resumePrime = _buildAutoAdvanceKickoff(next, done);
+      const nicelyNamedNext = String(next).replace(/-/g, " ");
+      action = {
+        label: `Resume Design — scope ${done.length + 1} (${nicelyNamedNext}) →`,
+        agent: "SADomainAgent",
+        prime: resumePrime,
+        mode: "interactive",
+        autoVariant: {
+          label: "Resume Auto ⚡",
+          agent: "SADomainAgent",
+          prime: resumePrime,
+          mode: "auto",
+          title: `Resume Design in auto mode from scope ${done.length + 1} (${nicelyNamedNext}); will auto-advance through remaining scopes.`,
+        },
       };
     } else if (discoveryDone) {
       // Discovery done → next step is Design. Two buttons surface here:
@@ -2278,7 +2676,12 @@
       };
     }
 
-    const noteLine = discoveryNote ? `<p class="welcome-note">${escapeHtml(discoveryNote)}</p>` : "";
+    // Notes shown beneath the state row: blocked-note (when applicable)
+    // takes priority and is styled red; otherwise the discovery agent's
+    // last note (set_step_status note) is surfaced as a muted line.
+    const noteLine = action?.blockedNote
+      ? `<p class="welcome-blocked-note">${escapeHtml(action.blockedNote)}</p>`
+      : (discoveryNote ? `<p class="welcome-note">${escapeHtml(discoveryNote)}</p>` : "");
 
     chatLog.innerHTML = `
       <div class="chat-msg agent welcome-card">
@@ -2312,6 +2715,9 @@
                        data-agent="${escapeHtml(action.autoVariant.agent || "")}"
                        data-mode="${escapeHtml(action.autoVariant.mode || "auto")}"
                        title="${escapeHtml(action.autoVariant.title || "")}">${escapeHtml(action.autoVariant.label)}</button>`
+            : ""}
+          ${action.secondary
+            ? `<a class="cta-btn cta-btn-secondary welcome-action" href="${action.secondary.href}">${escapeHtml(action.secondary.label)}</a>`
             : ""}
         </div>` : ""}
         ${action && action.prime !== undefined && firstUnfinished && firstUnfinished.id !== "intake"
@@ -2420,10 +2826,18 @@
     });
 
     // Side-effect: also refresh the sticky lifecycle bar with the data
-    // we just fetched (so we don't double-fetch).
+    // we just fetched (so we don't double-fetch). currentStepHint comes
+    // from the active phase's persisted note when present.
+    let currentStepHint = "";
+    let blocked = false;
+    if (firstUnfinished) {
+      const stepInfo = lifecycle?.steps?.[firstUnfinished.id];
+      if (stepInfo?.note) currentStepHint = String(stepInfo.note);
+      if (stepInfo?.status === "BLOCKED") blocked = true;
+    }
     updateLifecycleBar({
       eid, lifecycle, hasIntake, discoveryDone, discoveryInProgress,
-      currentLabel, lastDoneLabel: lastDone?.label,
+      currentLabel, lastDoneLabel: lastDone?.label, currentStepHint, blocked,
     });
   }
 
@@ -2440,19 +2854,38 @@
       bar.setAttribute("aria-hidden", "true");
       return;
     }
-    const { hasIntake, discoveryDone, discoveryInProgress, currentLabel, lastDoneLabel } = state;
-    const stepClass = discoveryDone ? "done"
+    const {
+      hasIntake, discoveryDone, discoveryInProgress,
+      currentLabel, lastDoneLabel, currentStepHint, blocked,
+    } = state;
+    // BLOCKED outranks every other state — a phase that returned BLOCKED
+    // is a hard stop; the user must resolve the underlying blocking items
+    // before any advancement. Render the dot red + non-pulsing so it
+    // visually screams "needs your attention" rather than blending into
+    // the green in-progress animation.
+    const stepClass = blocked ? "blocked"
+      : discoveryDone ? "done"
       : discoveryInProgress ? "in-progress"
       : hasIntake ? "ready"
       : "waiting";
     bar.classList.remove("hidden");
     bar.setAttribute("aria-hidden", "false");
+    // Two-line layout. Line 1: phase + last completed. Line 2: which
+    // step inside the phase is currently running (sourced from the
+    // active step's `note`, set by the agent on each set_step_status).
+    // When no hint is available we hide line 2 rather than render an
+    // empty band.
     bar.innerHTML = `
       <span class="chat-lifecycle-dot ${stepClass}" aria-hidden="true"></span>
       <span class="chat-lifecycle-text">
-        <strong>${escapeHtml(currentLabel || "Idle")}</strong>${
-          lastDoneLabel ? ` · last: ${escapeHtml(lastDoneLabel)}` : ""
-        }
+        <span class="chat-lifecycle-line1">
+          <strong>${escapeHtml(currentLabel || "Idle")}</strong>${
+            lastDoneLabel ? ` · last: ${escapeHtml(lastDoneLabel)}` : ""
+          }
+        </span>
+        ${currentStepHint
+          ? `<span class="chat-lifecycle-line2">${escapeHtml(currentStepHint)}</span>`
+          : ""}
       </span>`;
   }
 
@@ -2489,12 +2922,44 @@
       const lastDone = [...steps].reverse().find(s => s.done);
       // Pass overall "in progress" so the dot animates while any step's mid-flow.
       const anyInProgress = discoveryInProgress || designInProgress;
+      // Line-2 hint: which sub-step is currently active. Sources, in order:
+      //   1. Latest set_step_status note on the active phase (most reliable).
+      //   2. For Design, the scope-progress hint derived from artifacts.
+      //   3. The most recent activity-bar text (transient tool-name fallback).
+      const activePhaseId = firstUnfinished?.id;
+      let currentStepHint = "";
+      if (activePhaseId) {
+        const stepInfo = lifecycle?.steps?.[activePhaseId];
+        if (stepInfo?.note) currentStepHint = String(stepInfo.note);
+      }
+      // Design-specific: when no explicit note, surface the current scope.
+      if (!currentStepHint && designInProgress) {
+        const completedScopes = designScopes.filter(s =>
+          artifacts.some(a => a.startsWith(s + "/")));
+        const nextScope = designScopes.find(s => !completedScopes.includes(s));
+        if (nextScope) {
+          currentStepHint = `Scope ${completedScopes.length + 1}/${designScopes.length}: ${nextScope.replace(/-/g, " ")}`;
+        }
+      }
+      // Fallback: live activity-bar text while no persisted note yet.
+      if (!currentStepHint && chatActivityBar && !chatActivityBar.classList.contains("hidden")) {
+        currentStepHint = chatActivityBar.textContent || "";
+      }
+      // BLOCKED escalation — if the active phase returned BLOCKED, the
+      // chat lifecycle dot turns red and stops the pulse animation. The
+      // user can't miss it; advancement CTAs in the welcome card refuse
+      // until the underlying blocking open-items are resolved.
+      const blocked = activePhaseId
+        ? (lifecycle?.steps?.[activePhaseId]?.status === "BLOCKED")
+        : false;
       updateLifecycleBar({
         eid, hasIntake,
         discoveryDone: discoveryDone || designDone,  // shows "done" tint past discovery
         discoveryInProgress: anyInProgress,
         currentLabel: firstUnfinished?.label || "Complete",
         lastDoneLabel: lastDone?.label,
+        currentStepHint,
+        blocked,
       });
     } catch { /* swallow; next tick retries */ }
   }
@@ -2652,18 +3117,20 @@
     pendingAgentMsg.pills.push({ el: pill, text });
   }
 
-  // Render args dict as `key="abbrev", key2=12` — capped to 3 keys + ellipsis.
+  // Render args dict as `key="value", key2=12`. Per user request the
+  // text is no longer truncated — full strings + all keys are surfaced.
+  // CSS lets the pill wrap to multiple lines for long arg lists.
   function summarizeToolArgs(args) {
     if (!args || typeof args !== "object") return "()";
     const keys = Object.keys(args);
     if (!keys.length) return "()";
     const fmt = (v) => {
-      if (typeof v === "string") return `"${v.length > 30 ? v.slice(0, 27) + "…" : v}"`;
+      if (typeof v === "string") return `"${v}"`;
       if (v === null || typeof v !== "object") return String(v);
-      return Array.isArray(v) ? `[${v.length}]` : "{…}";
+      if (Array.isArray(v)) return JSON.stringify(v);
+      try { return JSON.stringify(v); } catch { return "{…}"; }
     };
-    return "(" + keys.slice(0, 3).map(k => `${k}=${fmt(args[k])}`).join(", ")
-      + (keys.length > 3 ? ", …" : "") + ")";
+    return "(" + keys.map(k => `${k}=${fmt(args[k])}`).join(", ") + ")";
   }
 
   // Map known tool names to human-readable trace-pill labels, with the
@@ -2672,7 +3139,10 @@
   // Keep labels short — they sit inside a pill row in the chat panel.
   function friendlyToolLabel(name, args) {
     args = args || {};
-    const trunc = (s, n = 40) => (s && s.length > n) ? s.slice(0, n - 1) + "…" : (s || "");
+    // Per user request: never truncate trace text. `trunc` is now a
+    // pass-through; pill width is controlled by CSS (wraps to multiple
+    // lines for long values).
+    const trunc = (s) => s || "";
     switch (name) {
       case "load_preamble":         return "Loading shared guidance";
       case "load_jargon_list":      return "Loading terminology list";
@@ -3147,8 +3617,110 @@
         delete _lastLifecycleStatuses[key];
       }
     }
+
+    // Drift detector — chat says "complete" but lifecycle still in-progress.
+    _detectDriftAndOfferMarkDone(eid, steps);
   }
   setInterval(pollLifecycle, 5000);
+
+  // Phase order — drift detector picks the first non-terminal step as
+  // the "active" phase whose chat-says-done claim we check against state.
+  const _PHASE_ORDER = ["intake", "discovery", "design", "review",
+                        "validation", "event-portal", "blueprint"];
+  // Matches typical completion language an agent uses in its final
+  // turn-text. Word-boundary anchored to avoid matching inside URLs or
+  // tool args. Case-insensitive.
+  const _COMPLETION_RE = /\b(complete|completed|done|finished|wrapped up|ready for review|ready for (?:the )?next phase|all set)\b/i;
+
+  function _driftDedupKey(eid, step, msgHash) {
+    return `sa.drift_offered.${eid}.${step}.${msgHash}`;
+  }
+  function _hashStr(s) {
+    // Cheap, stable 32-bit hash so we don't re-offer on the same message.
+    let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+    return Math.abs(h).toString(36);
+  }
+
+  function _detectDriftAndOfferMarkDone(eid, steps) {
+    // Active phase = first non-terminal in canonical order.
+    let activeStep = null;
+    for (const id of _PHASE_ORDER) {
+      const s = steps[id]?.status;
+      if (s !== "DONE" && s !== "DONE_WITH_CONCERNS") { activeStep = id; break; }
+    }
+    if (!activeStep || activeStep === "intake") return;    // intake doesn't go through set_step_status
+    // Need a recent agent message + completion language.
+    const text = _lastFinalAgentText;
+    if (!text || !_COMPLETION_RE.test(text)) return;
+    // Wait at least 5s after the message so we don't trigger on
+    // mid-stream language ("Discovery is almost complete, one more…").
+    if (Date.now() - _lastFinalAgentTs < 5000) return;
+    // Don't re-offer for the same (eid, step, message).
+    const msgHash = _hashStr(text);
+    const dedupKey = _driftDedupKey(eid, activeStep, msgHash);
+    try { if (localStorage.getItem(dedupKey)) return; } catch {}
+    try { localStorage.setItem(dedupKey, "1"); } catch {}
+    _renderDriftBanner(eid, activeStep);
+  }
+
+  function _renderDriftBanner(eid, step) {
+    if (!chatLog) return;
+    // Skip if the banner is already in the chat log for this step
+    // (the dedup key handles cross-poll; this handles the single-tick race).
+    if (chatLog.querySelector(`.drift-banner[data-drift-step="${CSS.escape(step)}"]`)) return;
+    const label = (_PHASE_LABELS && _PHASE_LABELS[step]) || step.replace(/-/g, " ");
+    const wrap = document.createElement("div");
+    wrap.className = "chat-msg agent drift-banner";
+    wrap.setAttribute("data-drift-step", step);
+    wrap.innerHTML = `
+      <div class="drift-banner-eyebrow">PHASE STATUS DRIFT</div>
+      <p>The agent's last message reads like ${escapeHtml(label)} is complete,
+      but the lifecycle status hasn't advanced. The next-phase CTA won't
+      appear until the lifecycle status moves.</p>
+      <p>If you've verified the agent really did finish, you can advance
+      manually. Otherwise dismiss this and let the agent continue.</p>
+      <div class="drift-banner-actions">
+        <button class="cta-btn drift-mark-done-btn"
+                data-drift-step="${escapeHtml(step)}">Mark ${escapeHtml(label)} done →</button>
+        <button class="cta-btn cta-btn-secondary drift-dismiss-btn">Dismiss</button>
+      </div>`;
+    chatLog.appendChild(wrap);
+    chatLog.scrollTop = chatLog.scrollHeight;
+
+    wrap.querySelector(".drift-dismiss-btn")?.addEventListener("click", () => wrap.remove());
+    wrap.querySelector(".drift-mark-done-btn")?.addEventListener("click", async (e) => {
+      const btn = e.currentTarget;
+      btn.disabled = true;
+      const orig = btn.textContent;
+      btn.textContent = "Marking…";
+      try {
+        const resp = await fetch(
+          `/api/engagements/${encodeURIComponent(eid)}/lifecycle/${encodeURIComponent(step)}/mark-done`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({
+              status: "DONE",
+              note: `Manual override after drift detection at ${new Date().toISOString()}`,
+            }),
+          }
+        );
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        // Replace banner with a confirmation line, then trigger render so
+        // the next-phase CTA appears.
+        wrap.innerHTML = `<div class="drift-banner-eyebrow">PHASE MARKED DONE</div>
+          <p>${escapeHtml(label)} is now DONE in the lifecycle store. The
+          next-phase CTA should appear momentarily.</p>`;
+        if (typeof syncChatProjectContext === "function") syncChatProjectContext();
+        if (typeof render === "function") render();
+      } catch (err) {
+        btn.disabled = false;
+        btn.textContent = orig;
+        alert(`Mark-done failed: ${err.message}`);
+      }
+    });
+  }
 
   // Empty-response card: rendered by finalizeAgentBubble when the agent
   // task ended with no actionable content (no text, no form card, no
@@ -3289,8 +3861,16 @@
     return { cleanText, blocks };
   }
 
+  // Latest finalized agent message — tracked for the drift detector below.
+  // When a phase's lifecycle status hasn't advanced but the agent's last
+  // message used completion language, the detector surfaces a "Mark
+  // <phase> done" banner so the user isn't stranded.
+  let _lastFinalAgentText = "";
+  let _lastFinalAgentTs = 0;
+
   function finalizeAgentBubble(finalText) {
     const text = (finalText || pendingAgentMsg?.lastText || "").trim();
+    if (text) { _lastFinalAgentText = text; _lastFinalAgentTs = Date.now(); }
     const { cleanText, blocks } = parseQuestionBlocks(text);
 
     if (pendingAgentMsg) {
@@ -3959,6 +4539,13 @@
         }
       } catch (err) { /* ignore malformed */ }
     };
+    // Heartbeat listener — server emits `event: heartbeat\ndata: {}` every
+    // 15s. We use it solely to stamp _lastSseEventAt so the 30s stale
+    // detector below knows the stream is alive even when the agent itself
+    // is quiet (between turns, mid-LLM-composition, etc.). Without this,
+    // the detector would force-reconnect on every legitimate idle gap.
+    chatEventSource.addEventListener("heartbeat", () => { _stampSse(); });
+
     chatEventSource.addEventListener("complete", () => {
       // CRITICAL: null the variable, don't just .close(). Every
       // `if (!chatEventSource) openSseStream(...)` check throughout
@@ -3973,6 +4560,164 @@
         chatEventSource = null;
       }
     });
+    // Browser auto-reconnects EventSource on transport errors per the
+    // retry: 5000 directive the server emits at stream open. While the
+    // browser is in CONNECTING state, give the user a transient cue
+    // (rather than silent dead air) — and on successful reconnect,
+    // the server replays buffered events via Last-Event-Id so we don't
+    // need to do anything more here.
+    chatEventSource.onerror = () => {
+      // readyState: 0 CONNECTING, 1 OPEN, 2 CLOSED. CLOSED means the
+      // stream is permanently dead (typically a 4xx); browser won't
+      // retry. CONNECTING means it WILL retry per the retry: directive.
+      const state = chatEventSource?.readyState;
+      if (state === 0) {
+        setActivityBar("Reconnecting to agent stream…");
+        _sseConsecutiveErrors++;
+        // After 3 consecutive failures, give up on SSE entirely and switch
+        // to long-poll. Some networks strip SSE traffic (corporate proxies,
+        // some VPNs); polling /api/chat/poll/{sid} avoids the problem.
+        if (_sseConsecutiveErrors >= 3 && !_longPollActive) {
+          _startLongPollFallback(sessionId);
+        }
+      } else if (state === 2) {
+        setActivityBar(null);
+        if (chatEventSource) { chatEventSource.close(); chatEventSource = null; }
+      }
+    };
+    chatEventSource.onopen = () => {
+      // Clear the reconnect pill if it was showing; subsequent live
+      // events will set their own activity-bar text.
+      if (chatActivityBar?.textContent?.startsWith("Reconnecting")) setActivityBar(null);
+      _sseConsecutiveErrors = 0;  // healthy open clears the long-poll trigger
+      // Reconcile-after-reconnect: silently catch the UI up to whatever
+      // changed on the server while the stream was down. Last-Event-Id
+      // replay handles in-flight chat events; this picks up lifecycle
+      // status, decisions, artifacts that may have advanced in the gap.
+      // Skips on the very first connection (no gap to catch up from).
+      if (_hasReconnectedOnce) _reconcileAfterReconnect();
+      _hasReconnectedOnce = true;
+    };
+  }
+  // Set to true after the first successful onopen so we only reconcile
+  // on actual reconnects, not the initial open. The lifecycle poll
+  // already runs every 5s so the cost of an extra reconcile fetch is
+  // small, but explicit gating keeps the network panel clean.
+  let _hasReconnectedOnce = false;
+
+  // Long-poll fallback state. Tracks SSE error count so we can switch
+  // modes only after 3 consecutive failures (single transient blips
+  // are handled by EventSource auto-reconnect). _sseConsecutiveErrors
+  // is reset on a successful onopen.
+  let _sseConsecutiveErrors = 0;
+  let _longPollActive = false;
+  let _longPollTimer = null;
+  let _longPollLastEventId = 0;
+  // Periodically attempt to re-enable SSE — every 60s try opening a
+  // fresh EventSource; if it stays connected for >5s, drop the polling.
+  let _longPollSseProbeTimer = null;
+
+  function _startLongPollFallback(sessionId) {
+    if (_longPollActive) return;
+    _longPollActive = true;
+    _sseConsecutiveErrors = 0;
+    setActivityBar("Streaming blocked — using long-poll fallback");
+    // Close the failing EventSource cleanly.
+    if (chatEventSource) { try { chatEventSource.close(); } catch {} chatEventSource = null; }
+    const tick = async () => {
+      if (!_longPollActive) return;
+      try {
+        const url = `/api/chat/poll/${encodeURIComponent(sessionId)}?since=${_longPollLastEventId}`;
+        const resp = await fetch(url, { credentials: "include" });
+        if (resp.ok) {
+          const body = await resp.json();
+          for (const ev of (body.events || [])) {
+            _stampSse();
+            // Dispatch each replayed payload through the same handler
+            // the live SSE stream uses, so the UI updates identically.
+            _dispatchSyntheticSseEvent(ev.payload);
+            _longPollLastEventId = ev.id;
+          }
+        }
+      } catch { /* network blip; next tick will retry */ }
+      _longPollTimer = setTimeout(tick, 2000);
+    };
+    tick();
+    // Try to recover SSE every 60s — corporate proxies sometimes
+    // re-establish; if we never check we're stuck on polling forever.
+    _longPollSseProbeTimer = setInterval(() => {
+      // Probe by opening a transient EventSource; if it stays open
+      // for 5s without error, we're back to live streaming.
+      const probe = new EventSource(`/api/chat/stream/${encodeURIComponent(sessionId)}`);
+      let probeOk = false;
+      const probeTimer = setTimeout(() => {
+        if (probeOk) {
+          _stopLongPollFallback();
+          chatEventSource = probe;
+          setActivityBar(null);
+        } else {
+          try { probe.close(); } catch {}
+        }
+      }, 5000);
+      probe.onopen = () => { probeOk = true; };
+      probe.onerror = () => { clearTimeout(probeTimer); try { probe.close(); } catch {} };
+    }, 60000);
+  }
+
+  function _stopLongPollFallback() {
+    _longPollActive = false;
+    if (_longPollTimer) { clearTimeout(_longPollTimer); _longPollTimer = null; }
+    if (_longPollSseProbeTimer) { clearInterval(_longPollSseProbeTimer); _longPollSseProbeTimer = null; }
+  }
+
+  // Replay a server-side payload as if it had arrived live on the SSE
+  // stream — same shape, same handler. Used by both Last-Event-Id replay
+  // (inside the SSE stream) AND the long-poll fallback.
+  function _dispatchSyntheticSseEvent(payload) {
+    if (!payload) return;
+    try {
+      const ev = (typeof payload === "string") ? JSON.parse(payload) : payload;
+      // Reuse the EventSource onmessage logic by synthesising an event-
+      // shaped object — easiest to just call the relevant branches inline.
+      // (Could be refactored to a named function later if the live SSE
+      // handler grows further; for now mirroring is clearer than the
+      // alternative of dispatching a MessageEvent.)
+      if (ev.type === "TaskStatusUpdateEvent") {
+        for (const d of extractDataParts(ev)) {
+          if (d.type === "tool_invocation_start") appendToolTrace(d);
+          else if (d.type === "tool_result") completeToolTrace(d);
+        }
+        const text = extractAgentText(ev);
+        if (text) startOrUpdateAgentBubble(text);
+      } else if (ev.type === "FinalResponse" || ev.type === "Task") {
+        finalizeAgentBubble(extractAgentText(ev));
+      } else if (ev.type === "Error") {
+        const msg = ev.data?.message || ev.data?.error || "(error)";
+        const agentName = _extractRespondingAgent(ev) || chatAgentSelect?.value || "the agent";
+        const errorCard = _buildErrorCard(msg, agentName, ev.data || {});
+        const wrap = document.createElement("div");
+        wrap.className = "chat-msg agent agent-error";
+        wrap.appendChild(errorCard);
+        chatLog.appendChild(wrap);
+        chatLog.scrollTop = chatLog.scrollHeight;
+        setActivityBar(null);
+      }
+    } catch { /* malformed payload; skip */ }
+  }
+
+  // Silent state catch-up after the EventSource reconnects. Re-runs the
+  // same fetches as refreshLifecycleBar + pollLifecycle so the dashboard
+  // reflects any work the agent did while the stream was down. No UI
+  // reload, no flash — the next render() picks up the fresh state.
+  async function _reconcileAfterReconnect() {
+    const eid = currentProjectId();
+    if (!eid) return;
+    try {
+      // Refresh the sticky lifecycle bar + activity-state derived from it.
+      if (typeof refreshLifecycleBar === "function") await refreshLifecycleBar();
+      // Re-fire the lifecycle drift / phase-handoff detector with fresh data.
+      if (typeof pollLifecycle === "function") await pollLifecycle();
+    } catch { /* best-effort; the 5s poll will catch up either way */ }
   }
 
   const chatAgentSelect = document.getElementById("chat-agent-select");
@@ -4089,10 +4834,17 @@
     const ctaHtml = cat.cta
       ? `<button type="button" class="cta-btn cta-btn-secondary agent-error-cta" data-action="${escapeHtml(cat.cta.action)}">${escapeHtml(cat.cta.label)}</button>`
       : "";
+    // Server-side correlation id (added in _send_error_to_external). The
+    // user can quote this when reporting a bug; operator greps sam.log for
+    // the matching `[error_id=…]` log line to pull the full failure stack.
+    const errorId = evData?.error_id;
     card.innerHTML = `
       <div class="agent-error-header">
         <span class="agent-error-tag">${escapeHtml(cat.tag)}</span>
         <span class="agent-error-agent">${escapeHtml(agentName)}</span>
+        ${errorId
+          ? `<span class="agent-error-id" title="Quote this when reporting the issue. Operator can grep sam.log for [error_id=${escapeHtml(errorId)}] to retrieve the full failure context.">ID ${escapeHtml(errorId)}</span>`
+          : ""}
       </div>
       <div class="agent-error-body">
         <p class="agent-error-explanation">${escapeHtml(cat.explanation)}</p>
@@ -4549,6 +5301,16 @@
     _quietIndicatorShown = false;
   }
 
+  // Mid-tier threshold — when we haven't seen ANY SSE traffic (data OR
+  // heartbeat) for >30s, the server emits heartbeats every 15s so two
+  // missed heartbeats means the TCP socket is silently dead even if
+  // EventSource.readyState still reports OPEN (a known flaky-network
+  // failure mode). Force-close + reopen — the EventSource will send
+  // Last-Event-Id on reconnect and the server replays whatever we missed.
+  const _SSE_STALE_MS = 30000;
+  let _lastForceReconnectAt = 0;
+  const _FORCE_RECONNECT_COOLDOWN_MS = 60000;  // don't thrash if reconnects fail
+
   setInterval(() => {
     if (!pendingAgentMsg) return;
     const silentFor = Date.now() - _lastSseEventAt;
@@ -4565,6 +5327,20 @@
       const ag = chatAgentSelect?.value || "the agent";
       const secs = Math.floor(silentFor / 1000);
       setActivityBar(`${ag} is thinking… (${secs}s)`);
+    }
+    // Mid path: 30s+ silent (no data AND no heartbeat) → TCP probably dead
+    // despite EventSource thinking it's connected. Force a fresh reconnect;
+    // the server's Last-Event-Id replay buffer fills in whatever we missed.
+    // Cooldown gate so we don't thrash if reconnects keep failing.
+    if (silentFor >= _SSE_STALE_MS && silentFor < _SSE_SILENCE_MS) {
+      const sinceReconnect = Date.now() - _lastForceReconnectAt;
+      if (sinceReconnect >= _FORCE_RECONNECT_COOLDOWN_MS && chatEventSource && chatSessionId) {
+        _lastForceReconnectAt = Date.now();
+        setActivityBar("Reconnecting to agent stream…");
+        try { chatEventSource.close(); } catch {}
+        chatEventSource = null;
+        openSseStream(chatSessionId);
+      }
     }
     // Hard path: 240s+ quiet → SSE channel is presumed dead, render recovery.
     if (silentFor >= _SSE_SILENCE_MS) {

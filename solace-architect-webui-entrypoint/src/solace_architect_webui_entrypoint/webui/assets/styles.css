@@ -197,24 +197,15 @@ body[data-sidebar="open"] .sidebar-rail { display: none; }
   border-style: solid;
 }
 .empty-hint { padding: 4px 20px; font-size: 12px; color: var(--muted); font-style: italic; }
-.project-nav,
-.live-nav { display: flex; flex-direction: column; }
-.project-nav .nav-link,
-.live-nav .nav-link {
+.project-nav { display: flex; flex-direction: column; }
+.project-nav .nav-link {
   display: block; padding: 6px 20px; font-size: 14px;
   color: var(--muted); border-left: 2px solid transparent;
 }
-.project-nav .nav-link:hover,
-.live-nav .nav-link:hover { color: var(--primary); background: var(--bg); }
+.project-nav .nav-link:hover { color: var(--primary); background: var(--bg); }
 .project-nav .nav-link.active {
   color: var(--primary); background: var(--bg);
   border-left-color: var(--accent);
-}
-/* Disabled state (used for Live View when its tab is already open) — the
- * pointer-events:none guarantees the click won't even reach the browser
- * navigation layer; the JS click handler is belt-and-braces. */
-.nav-link.disabled {
-  opacity: 0.5; cursor: not-allowed; pointer-events: none;
 }
 .hidden { display: none !important; }
 
@@ -993,6 +984,12 @@ pre {
   text-transform: uppercase; font-weight: 600;
 }
 .agent-error-agent { color: var(--muted, #888); }
+.agent-error-id {
+  margin-left: auto; padding: 2px 8px; border-radius: 3px;
+  background: rgba(0,0,0,0.04); color: var(--muted, #888);
+  font-family: 'Space Mono', monospace; font-size: 10.5px;
+  cursor: help; user-select: all;
+}
 .agent-error-explanation { margin: 4px 0; line-height: 1.45; }
 .agent-error-message-from-llm {
   margin: 6px 0;
@@ -1063,6 +1060,42 @@ pre {
   background: rgba(0, 200, 100, 0.05);
   box-shadow: 0 0 0 2px rgba(0, 200, 100, 0.08);
 }
+/* NEEDS_CONTEXT — the agent paused with an ask_user_question and is waiting
+ * for the user. Steady amber so it visually distinguishes from active green
+ * (running) and done-with-concerns orange (finished but flagged). */
+.progress-step.needs-context {
+  color: #b58900; border-color: #b58900; border-width: 2px;
+  background: rgba(181, 137, 0, 0.06);
+  box-shadow: 0 0 0 2px rgba(181, 137, 0, 0.10);
+}
+.progress-step.needs-context::after {
+  content: "Waiting for you";
+  position: absolute; bottom: -18px; left: 50%; transform: translateX(-50%);
+  font-size: 9px; font-weight: 700; letter-spacing: 0.4px;
+  color: #b58900; text-transform: uppercase; white-space: nowrap;
+}
+.progress-step.needs-context { position: relative; }
+/* Skipped — routing engine excluded this step (e.g. opt-out Event Portal
+ * via preferences.provision_event_portal=false). Muted + strikethrough so
+ * the user understands "intentionally not running" vs "not yet reached". */
+.progress-step.skipped {
+  color: var(--muted, #888); border-style: dashed; opacity: 0.65;
+}
+.progress-step.skipped .progress-label { text-decoration: line-through; }
+/* BLOCKED — phase returned BLOCKED status (typically Validation when
+ * blocking open-items remain). Red border + ⛔ overlay icon. The welcome
+ * card's CTA chain refuses to advance past a blocked phase; user must
+ * resolve the blocking items first. */
+.progress-step.blocked {
+  color: #c0392b; border-color: #c0392b; background: rgba(192, 57, 43, 0.04);
+  position: relative;
+}
+.progress-step.blocked::after {
+  content: "⛔";
+  position: absolute; top: -8px; right: -8px;
+  font-size: 14px; line-height: 1;
+  background: var(--bg, #fff); border-radius: 50%; padding: 1px;
+}
 .progress-icon { position: relative; display: flex; align-items: center; justify-content: center; }
 .progress-check {
   position: absolute; bottom: -4px; right: -6px;
@@ -1071,6 +1104,41 @@ pre {
   display: flex; align-items: center; justify-content: center;
 }
 .progress-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
+/* Restart footer on each phase tile. Only shown for active/done phases
+ * (canRestart in renderProgressBanner) — clicking opens the phase-specific
+ * confirm modal that POSTs DELETE /api/engagements/{eid}/{phase} and
+ * cascades the wipe to all downstream phases. */
+.progress-restart-btn {
+  background: none; border: none; padding: 2px 6px;
+  font-size: 10px; font-family: inherit;
+  color: var(--muted, #888); cursor: pointer; border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+.progress-restart-btn:hover { color: var(--danger, #c0392b); background: rgba(192, 57, 43, 0.06); }
+.progress-step.active .progress-restart-btn { color: var(--primary); }
+
+/* Design tile sub-strip — fine-grained per-scope progress so the user can
+ * see "we're 4 of 9 scopes through Design" without opening chat. Dots are
+ * per scope, coloured by status (done/current/pending/skipped). */
+.design-scope-strip {
+  display: flex; align-items: center; gap: 6px; margin-top: 4px;
+  font-size: 10px;
+}
+.design-scope-count {
+  font-family: 'Space Mono', monospace; color: var(--muted, #888);
+  font-weight: 600;
+}
+.design-scope-dots { display: inline-flex; gap: 2px; line-height: 1; }
+.scope-dot {
+  display: inline-block; width: 10px; text-align: center;
+  font-size: 11px; line-height: 1; color: var(--border, #ccc);
+  cursor: default;
+}
+.scope-dot.done { color: var(--accent, #00C895); cursor: pointer; }
+.scope-dot.current { color: var(--primary, #093B5F); font-weight: bold; }
+.scope-dot.skipped { color: var(--muted, #ccc); opacity: 0.5; }
+.design-scope-dots a { text-decoration: none; }
+.design-scope-dots a:hover .scope-dot.done { transform: scale(1.2); transition: transform 0.1s; }
 
 /* Settings page (two-pane: inner sidebar + content) */
 .settings-page { display: grid; grid-template-columns: 220px 1fr; gap: 24px; align-items: start; }
@@ -1310,6 +1378,11 @@ pre {
   font-size: 12px; color: var(--text); font-style: italic;
   padding: 6px 10px; background: rgba(0,0,0,0.03); border-radius: 4px;
 }
+.welcome-blocked-note {
+  font-size: 12px; color: #c0392b; font-weight: 600;
+  padding: 6px 10px; background: rgba(192, 57, 43, 0.06);
+  border-left: 3px solid #c0392b; border-radius: 4px;
+}
 .welcome-actions { margin-top: 4px; }
 .welcome-action {
   display: inline-block; font-size: 13px; padding: 6px 14px;
@@ -1340,13 +1413,24 @@ pre {
 /* Sticky lifecycle bar — one-line indicator above the chat scroll, always
    visible while a project is active. Updated by refreshLifecycleBar(). */
 .chat-lifecycle-bar {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: flex-start; gap: 8px;
   padding: 6px 12px;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
   font-size: 12px;
 }
 .chat-lifecycle-bar.hidden { display: none; }
+/* Two-line layout: line 1 = phase + last-completed, line 2 = current
+ * step inside the phase (sourced from set_step_status notes). The dot
+ * sits at the top to align with line 1. */
+.chat-lifecycle-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.chat-lifecycle-line1 { display: block; }
+.chat-lifecycle-line2 {
+  display: block; font-size: 11px; color: var(--muted, #888);
+  font-style: italic;
+  white-space: normal; word-break: break-word; overflow-wrap: anywhere;
+}
+.chat-lifecycle-dot { margin-top: 5px; }
 
 .chat-activity-bar {
   padding: 6px 12px;
@@ -1354,7 +1438,10 @@ pre {
   border-bottom: 1px solid rgba(0,200,149,0.3);
   font-size: 12px; color: var(--primary);
   font-style: italic;
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: flex-start; gap: 8px;
+  /* Wrap rather than truncate — user wants the FULL thinking trace
+   * (tool name + args) visible at all times. */
+  white-space: normal; word-break: break-word; overflow-wrap: anywhere;
 }
 .chat-activity-bar.hidden { display: none; }
 .chat-activity-bar::before {
@@ -1375,6 +1462,7 @@ pre {
 }
 .chat-lifecycle-dot.done { background: var(--accent); box-shadow: 0 0 0 2px rgba(0,200,149,0.2); }
 .chat-lifecycle-dot.waiting { background: #b58900; }
+.chat-lifecycle-dot.blocked { background: #c0392b; box-shadow: 0 0 0 2px rgba(192,57,43,0.25); }
 @keyframes lifecycle-pulse {
   0%, 100% { opacity: 1; transform: scale(1); }
   50% { opacity: 0.4; transform: scale(0.85); }
@@ -1389,11 +1477,14 @@ pre {
 .activity-pills.collapsed { display: none; }
 .activity-pills.collapsed.expanded { display: flex; }
 .activity-pill {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; align-items: flex-start; gap: 8px;
   padding: 4px 10px;
   background: rgba(0,0,0,0.03); border-radius: 12px;
   font-size: 12px; color: var(--text);
   align-self: flex-start; max-width: 100%;
+  /* Same as the activity bar: wrap to multiple lines instead of clipping
+   * so the full tool name + args remain readable. */
+  white-space: normal; word-break: break-word; overflow-wrap: anywhere;
 }
 .activity-pill-icon {
   font-family: 'Space Mono', monospace; font-size: 11px;
@@ -1599,3 +1690,20 @@ pre {
 .export-archive-body .cta-btn { align-self: flex-start; margin-top: 6px; }
 
 .status-badge.pending { background: rgba(0,0,0,0.06); color: var(--muted, #888); }
+
+/* Drift-detection banner — fires when chat declares phase-complete but the
+ * lifecycle store hasn't recorded it. Quiet amber styling so it's visible
+ * but not alarming; user can dismiss or mark-done. */
+.drift-banner {
+  border: 1px solid #d4a017; background: rgba(212, 160, 23, 0.06);
+  border-radius: 6px; padding: 12px 14px; margin: 8px 0;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.drift-banner-eyebrow {
+  font-family: 'Space Mono', monospace; font-size: 10px;
+  letter-spacing: 0.1em; color: #b8800c; font-weight: 700;
+}
+.drift-banner p { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text); }
+.drift-banner-actions { display: flex; gap: 8px; margin-top: 4px; }
+.drift-mark-done-btn { background: #b8800c; color: white; }
+.drift-mark-done-btn:hover { background: #d4a017; }

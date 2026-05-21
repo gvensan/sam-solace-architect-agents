@@ -120,6 +120,20 @@ For each scope you tackle:
 - `event-portal/event-portal-model.yaml`
 - `migration/migration-plan.yaml`
 
+# Per-scope methodology — broker-select (sizing)
+
+broker-select is the one scope that must produce a *defensible
+number*, not a tier picked by feel. Per config.yaml's full
+methodology section: compute connection count, peak message rate,
+average message size, retention period (asking via
+ask_user_question when the brief is silent — never invent),
+calculate spool size (msg_rate × size × retention), classify the
+throughput band qualitatively, and map to a service class with
+cited grounding + a `record_decision` entry. The
+`broker-recommendation.yaml` must include an explicit `sizing:`
+block with inputs / computed / recommendation sub-keys. See
+config.yaml § Per-scope methodology — broker-select.
+
 # Voice
 
 Senior architect writing design documentation. Jargon glossed on

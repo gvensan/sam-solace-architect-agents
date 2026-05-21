@@ -126,20 +126,46 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         require_auth = (os.environ.get("WEBUI_REQUIRE_AUTH", "true").lower() != "false")
         enable_signup = (os.environ.get("WEBUI_ENABLE_SIGNUP", "true").lower() != "false")
 
+        # Session TTL (seconds). Drives both the DB-side expires_at AND the
+        # browser cookie's max_age (both flow from state.session_ttl_seconds
+        # in routes.py login/signup handlers). Default 7 days; override with
+        # WEBUI_SESSION_TTL_HOURS for finer control (env is parsed as float
+        # so half-hour values work too). Lower for shared kiosks; higher for
+        # multi-day engagements where re-auth interruption is painful.
+        try:
+            ttl_hours = float(os.environ.get("WEBUI_SESSION_TTL_HOURS", "168"))  # 168h = 7d
+        except (TypeError, ValueError):
+            ttl_hours = 168.0
+            log.warning("%s Invalid WEBUI_SESSION_TTL_HOURS — falling back to 168 (7d)",
+                        self.log_identifier)
+        ttl_hours = max(1.0, ttl_hours)   # floor at 1h so we never lock users out instantly
+        session_ttl_seconds = int(ttl_hours * 3600)
+
         self._auth_state: AuthState = ensure_initialized(
             db_path,
             require_auth=require_auth,
             enable_signup=enable_signup,
             csrf_secret=os.environ.get("WEBUI_CSRF_SECRET"),
+            session_ttl_seconds=session_ttl_seconds,
         )
         log.info(
-            "%s Auth: db=%s, require_auth=%s, enable_signup=%s",
-            self.log_identifier, db_path, require_auth, enable_signup,
+            "%s Auth: db=%s, require_auth=%s, enable_signup=%s, session_ttl=%.1fh",
+            self.log_identifier, db_path, require_auth, enable_signup, ttl_hours,
         )
 
         # Per-session SSE queues. Key: session_id (== A2A request_context["session_id"]).
         # Created lazily on the HTTP loop thread; cross-thread access uses run_coroutine_threadsafe.
         self._sse_queues: Dict[str, asyncio.Queue] = {}
+
+        # Per-session replay buffer — last 100 events, indexed by monotonic id.
+        # Required for SSE Last-Event-Id reconnection: when the browser drops
+        # and reconnects (proxy timeout, tab throttling, network blip), it
+        # sends Last-Event-Id and we replay every event newer than that id.
+        # Without this, the only recovery is the heavy "RESULT NOT RECEIVED"
+        # card — a 5-second disconnect costs the user a full state reload.
+        from collections import deque as _deque
+        self._sse_replay: Dict[str, "_deque"] = {}
+        self._sse_next_id: Dict[str, int] = {}
 
         # aiohttp web objects (set in _start_listener's worker thread)
         self._app: Optional[web.Application] = None
@@ -205,8 +231,7 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                     path = request.path
                     if (path.startswith("/assets/")
                             or path in {"/", "/settings"}
-                            or path.startswith("/intake")
-                            or path.startswith("/visualizer")):
+                            or path.startswith("/intake")):
                         response.headers.setdefault("Cache-Control", "no-cache, must-revalidate")
                     return response
 
@@ -225,22 +250,14 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                 self._app.router.add_get("/intake", self._serve_intake_form)
                 self._app.router.add_get("/intake/{tail:.*}", self._serve_intake_form)
                 self._app.router.add_static("/assets/", static_dir / "assets", show_index=False)
-                # Visualizer (forked from sam-visualizer; lives in visualizer-src/,
-                # built into webui/visualizer/). Static mount MUST come before
-                # the catch-all so /visualizer/assets/* doesn't get swallowed.
-                self._app.router.add_static(
-                    "/visualizer/assets/",
-                    static_dir / "visualizer" / "assets",
-                    show_index=False,
-                )
-                self._app.router.add_get("/visualizer", self._serve_visualizer)
-                self._app.router.add_get("/visualizer/{tail:.*}", self._serve_visualizer)
-                # Visualizer pulls broker creds + namespace + current engagement
-                # from this endpoint on page load. Direct route (not via the
-                # API_ROUTES adapter) so we can read the session cookie.
-                self._app.router.add_get("/api/visualizer/config", self._visualizer_config)
                 # SSE chat stream + chat POST + agent discovery
                 self._app.router.add_get("/api/chat/stream/{session_id}", self._sse_chat_stream)
+                # Long-poll fallback for environments where SSE doesn't work
+                # (corporate proxies that strip long-lived HTTP, browsers/
+                # extensions that block EventSource). Client switches to this
+                # after 3 consecutive SSE failures. Returns events from the
+                # replay buffer with id > since query param.
+                self._app.router.add_get("/api/chat/poll/{session_id}", self._chat_poll)
                 self._app.router.add_post("/api/chat/message", self._chat_message)
                 self._app.router.add_get("/api/agents", self._agents_list)
                 # Health probes (unauthenticated)
@@ -401,10 +418,50 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
     async def _send_error_to_external(
         self, external_request_context: Dict[str, Any], error_data: JSONRPCError,
     ) -> None:
+        # Stamp every error with a short correlation id, log it alongside the
+        # full error detail server-side, and surface the id in the SSE payload.
+        # The frontend renders "Error ID: <id>" in the error bubble so the user
+        # can quote it; you (the operator) grep sam.log for the id to find the
+        # full failure context. Without this, error bubbles are opaque and
+        # support is "send me your console + logs and we'll see."
+        error_id = uuid.uuid4().hex[:10]
+        log.error(
+            "%s [error_id=%s] external error: code=%s msg=%r data=%r ctx=%r",
+            self.log_identifier, error_id,
+            error_data.code, error_data.message,
+            getattr(error_data, "data", None),
+            {k: external_request_context.get(k) for k in ("session_id", "user_id", "engagement_id")},
+        )
+        # Mark any in-flight step BLOCKED so the dashboard surfaces a clear
+        # failure state instead of leaving the engagement frozen in
+        # NEEDS_CONTEXT / IN_PROGRESS forever. Without this, an LLM 503 mid-
+        # turn leaves Progress showing "Continue in chat →" with no way for
+        # the user to know the agent is dead.
+        engagement_id = external_request_context.get("engagement_id")
+        user_id = external_request_context.get("user_id")
+        if engagement_id:
+            try:
+                from solace_architect_core.tools import lifecycle_tools
+                from solace_architect_core._user_context import scoped_user as _scoped_user
+                with _scoped_user(user_id):
+                    status_res = await lifecycle_tools.get_engagement_status(engagement_id)
+                    steps = ((status_res.data or {}).get("steps") or {})
+                    active_states = {"NEEDS_CONTEXT", "IN_PROGRESS"}
+                    for step_id, info in list(steps.items()):
+                        if (info or {}).get("status") in active_states:
+                            await lifecycle_tools.set_step_status(
+                                engagement_id, step=step_id, status="BLOCKED",
+                                agent="<gateway>",
+                                note=f"agent task failed (error_id={error_id}); Restart {step_id} or check logs",
+                            )
+            except Exception:    # noqa: BLE001 — never let status-write failure mask the error
+                log.exception("%s [error_id=%s] failed to mark engagement steps BLOCKED",
+                              self.log_identifier, error_id)
         await self._enqueue_sse(external_request_context, {
             "type": "Error",
             "data": {"code": error_data.code, "message": error_data.message,
-                     "data": getattr(error_data, "data", None)},
+                     "data": getattr(error_data, "data", None),
+                     "error_id": error_id},
         })
 
     # ---------- HTTP handlers ----------
@@ -418,106 +475,6 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         """Serve the intake form for /intake/new and /intake/edit/{id}."""
         return web.FileResponse(_webui_static_dir() / "intake" / "index.html",
                                 headers={"Cache-Control": "no-store"})
-
-    async def _serve_visualizer(self, request: web.Request) -> web.Response:
-        """Serve the visualizer SPA shell for /visualizer and any sub-path.
-
-        The Preact app fetches /api/visualizer/config on mount to learn the
-        broker URL + credentials + namespace + current engagement_id from the
-        server-side session — no broker-config modal needed when running
-        embedded.
-
-        Vite's public/ directory (broker.png, future favicons, etc.) lands in
-        the bundle root, not under assets/. For any /visualizer/<file> request
-        where <file> exists in the visualizer bundle dir, serve that file with
-        an aiohttp-inferred Content-Type. Otherwise fall back to the SPA shell
-        so client-side routes (e.g. /visualizer/anything) still hit index.html.
-        Path-traversal is blocked by resolving the candidate path and asserting
-        it stays under the visualizer dir.
-        """
-        viz_dir = (_webui_static_dir() / "visualizer").resolve()
-        tail = request.match_info.get("tail", "")
-        if tail:
-            candidate = (viz_dir / tail).resolve()
-            # path-traversal guard: candidate must be under viz_dir
-            try:
-                candidate.relative_to(viz_dir)
-            except ValueError:
-                return web.HTTPNotFound()
-            if candidate.is_file():
-                return web.FileResponse(candidate)
-        return web.FileResponse(viz_dir / "index.html",
-                                headers={"Cache-Control": "no-store"})
-
-    async def _visualizer_config(self, request: web.Request) -> web.Response:
-        """Return broker + namespace + user + engagement context for the visualizer.
-
-        The visualizer's `fetch('/api/visualizer/config')` on mount lands here.
-        We hand over the entrypoint's own env-var-sourced broker creds (so the
-        browser doesn't need a manual config modal), the active user (resolved
-        from the session cookie when auth is on, else 'anonymous'), and the
-        engagement_id from the query string (preferred) or session state.
-
-        Security: broker user/password reach the browser over the same origin
-        that's already gated by `WEBUI_REQUIRE_AUTH`. For multi-tenant / shared
-        deployments, swap the env-var lookup below for a dedicated read-only
-        broker viewer credential — see plugins/solace-architect-webui-entrypoint/
-        visualizer-src/README.md for the upgrade path.
-        """
-        # Resolve user identity from the session cookie. Mirrors the path used
-        # by the chat endpoint; if auth is off, returns anonymous.
-        session_token = request.cookies.get(SESSION_COOKIE)
-        if self._auth_state.require_auth:
-            user_row = validate_session(self._auth_state, session_token) if session_token else None
-            if user_row:
-                claims = user_to_claims(user_row)
-            else:
-                # Match how the dashboard treats unauthenticated requests —
-                # the auth middleware would normally redirect to /login before
-                # this point, but be defensive.
-                return web.json_response(
-                    {"error": "not authenticated"}, status=401,
-                    headers={"Cache-Control": "no-store"},
-                )
-        else:
-            claims = {"id": "anonymous", "name": "anonymous"}
-
-        # Look up the requested engagement name (best-effort; visualizer
-        # doesn't fail if this is null).
-        engagement_id = request.query.get("engagement") or None
-        engagement_name: Optional[str] = None
-        if engagement_id:
-            try:
-                from solace_architect_core.tools import project_tools
-                from solace_architect_core._user_context import scoped_user as _scoped_user
-                with _scoped_user(claims.get("id")):
-                    proj_list = (await project_tools.list_projects(include_archived=True)).data or []
-                    match = next((p for p in proj_list if p.get("id") == engagement_id), None)
-                    if match:
-                        engagement_name = match.get("name") or match.get("id")
-            except Exception:    # noqa: BLE001 — name is informational only
-                log.exception("%s visualizer-config: project lookup failed", self.log_identifier)
-
-        return web.json_response(
-            {
-                "user": {
-                    "id": claims.get("id", "anonymous"),
-                    "display_name": claims.get("name") or claims.get("id", "anonymous"),
-                },
-                "broker": {
-                    "url": os.environ.get("SOLACE_BROKER_URL", ""),
-                    "vpn": os.environ.get("SOLACE_BROKER_VPN", "default"),
-                    "username": os.environ.get("SOLACE_BROKER_USERNAME", ""),
-                    "password": os.environ.get("SOLACE_BROKER_PASSWORD", ""),
-                },
-                "namespace": os.environ.get("NAMESPACE", ""),
-                "engagement": (
-                    {"id": engagement_id, "name": engagement_name}
-                    if engagement_id else None
-                ),
-            },
-            headers={"Cache-Control": "no-store"},
-        )
 
     async def _serve_export_file(self, request: web.Request) -> web.Response:
         """Serve a rendered export artifact (HTML/PDF/ZIP) as raw bytes.
@@ -606,6 +563,53 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                 status=400, headers={"Cache-Control": "no-store"},
             )
 
+        # Server-side gate for blocking open-items on phase-kickoff messages.
+        # The frontend disables the Start-Blueprint / Start-Event-Portal CTAs
+        # while blocking items exist, but a direct POST (CI, scripted client,
+        # or DOM-disable bypass) could otherwise dispatch a step that
+        # Validation explicitly blocked. We refuse with 412 if the message
+        # starts with "Phase: <step>" and any open-item lists that step in
+        # affecting_step with severity=blocking. Plain chat replies (no
+        # Phase prefix) are not gated — they're conversation, not dispatch.
+        engagement_id = (request_context or {}).get("engagement_id")
+        text = (body.get("text") or "").lstrip()
+        import re as _re
+        phase_match = _re.match(r"^Phase:\s*([a-z0-9\-]+)", text, _re.IGNORECASE)
+        if phase_match and engagement_id:
+            target_step = phase_match.group(1).strip().lower()
+            try:
+                from solace_architect_core.tools import decision_tools
+                from solace_architect_core._user_context import scoped_user as _scoped_user
+                with _scoped_user(user_identity.get("id") if user_identity else None):
+                    items_res = await decision_tools.read_open_items(
+                        engagement_id, status="open", severity="blocking",
+                    )
+                blockers = [
+                    i for i in (items_res.data or [])
+                    if (i or {}).get("affecting_step") == target_step
+                ]
+                if blockers:
+                    return web.json_response(
+                        {
+                            "error": "blocking open-items prevent this step",
+                            "step": target_step,
+                            "blockers": [
+                                {"id": b.get("id"), "description": b.get("description")}
+                                for b in blockers[:10]
+                            ],
+                            "hint": (
+                                f"Resolve the listed open-items (see Open Items view) "
+                                f"before dispatching {target_step}."
+                            ),
+                        },
+                        status=412,
+                        headers={"Cache-Control": "no-store"},
+                    )
+            except Exception:
+                # Don't let a guard-side error mask a real dispatch — log and
+                # fall through. The frontend gate is the primary defense.
+                log.exception("%s blocking-item gate check failed", self.log_identifier)
+
         # Submit through BaseGatewayComponent's dispatch path. SAM publishes to
         # the agent over A2A; responses arrive on the gateway response/status
         # topics and route back into _send_*_to_external → SSE queue (we bridge
@@ -671,28 +675,137 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
         )
 
     async def _sse_chat_stream(self, request: web.Request) -> web.StreamResponse:
-        """SSE stream of agent events for a single session."""
+        """SSE stream of agent events for a single session.
+
+        Robustness:
+          - Every event carries an ``id:`` so the browser's EventSource records
+            it and sends ``Last-Event-Id`` on reconnect.
+          - On reconnect we replay every buffered event with id strictly greater
+            than the supplied ``Last-Event-Id``, then resume live streaming.
+            Buffer is bounded to the last 100 events per session (deque maxlen),
+            which covers the typical 5-30s drop comfortably.
+          - A ``retry: 5000`` directive tells the browser to retry every 5s
+            on disconnect (default is 3s — slightly slower is friendlier on
+            flaky links and on the server's accept queue).
+          - A background heartbeat task writes ``: keepalive\\n\\n`` every 15s.
+            Idle TCP connections get reaped by proxies / load balancers /
+            corporate firewalls around the 30-60s mark; the heartbeat both
+            keeps the socket warm AND lets the client distinguish "agent is
+            quiet" from "connection is dead" (no heartbeat for >30s → dead).
+        """
+        from collections import deque
         session_id = request.match_info["session_id"]
         queue = self._sse_queues.setdefault(session_id, asyncio.Queue())
+        replay = self._sse_replay.setdefault(session_id, deque(maxlen=100))
 
         resp = web.StreamResponse(status=200, headers={
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-store",
             "Connection": "keep-alive",
+            # Disable proxy buffering — some reverse proxies (nginx) buffer
+            # response bodies by default, which silently breaks SSE.
+            "X-Accel-Buffering": "no",
         })
         await resp.prepare(request)
+
+        # Tell the browser to retry every 5s on disconnect, and emit a
+        # zero-id comment so the connection is "live" the moment we start.
+        await resp.write(b"retry: 5000\n\n")
+
+        # Replay any events the client missed since its last connection.
+        last_event_id_hdr = request.headers.get("Last-Event-Id", "").strip()
+        try:
+            last_seen = int(last_event_id_hdr) if last_event_id_hdr else 0
+        except ValueError:
+            last_seen = 0
+        if last_seen > 0:
+            for ev_id, event in list(replay):
+                if ev_id > last_seen:
+                    await resp.write(
+                        f"id: {ev_id}\ndata: {_safe_json_dumps(event)}\n\n".encode("utf-8")
+                    )
+
+        # Heartbeat — keeps idle connections from being timed-out by
+        # intermediaries AND lets the client detect "stream died" reliably.
+        heartbeat_task = asyncio.create_task(self._sse_heartbeat(resp))
+
         try:
             while True:
                 event = await queue.get()
                 if event is None:                   # poison pill = client disconnect
                     break
+                ev_id = self._sse_next_id.get(session_id, 0) + 1
+                self._sse_next_id[session_id] = ev_id
+                replay.append((ev_id, event))
                 payload = _safe_json_dumps(event)
-                await resp.write(f"data: {payload}\n\n".encode("utf-8"))
+                await resp.write(
+                    f"id: {ev_id}\ndata: {payload}\n\n".encode("utf-8")
+                )
                 if event.get("final") or event.get("type") in ("FinalResponse", "Error"):
                     await resp.write(b"event: complete\ndata: {}\n\n")
         except (asyncio.CancelledError, ConnectionResetError):
             pass
+        finally:
+            heartbeat_task.cancel()
         return resp
+
+    async def _chat_poll(self, request: web.Request) -> web.Response:
+        """Long-poll fallback for environments where SSE is blocked.
+
+        Returns events newer than ``?since=<event_id>`` from the same per-
+        session replay buffer the SSE handler uses. Client switches to this
+        endpoint after 3 consecutive EventSource failures, polling every
+        2s. Replays the missed tail in a single response (cap 100 events
+        via the deque maxlen).
+
+        Response shape:
+            {"events": [{id, payload}, ...], "next_since": <last_id>}
+
+        Empty array is a normal "no new events yet" response; the client
+        keeps polling on a fixed cadence.
+        """
+        session_id = request.match_info["session_id"]
+        try:
+            since = int(request.query.get("since", "0"))
+        except ValueError:
+            since = 0
+        replay = self._sse_replay.get(session_id)
+        events = []
+        if replay:
+            for ev_id, payload in list(replay):
+                if ev_id > since:
+                    events.append({"id": ev_id, "payload": payload})
+        next_since = events[-1]["id"] if events else since
+        return web.json_response(
+            {"events": events, "next_since": next_since},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @staticmethod
+    async def _sse_heartbeat(resp: web.StreamResponse) -> None:
+        """Emit a named ``heartbeat`` event every 15s.
+
+        Two purposes:
+          1. Keeps idle TCP connections from being timed-out by reverse proxies,
+             load balancers, and corporate firewalls (typical idle reap: 30-60s).
+          2. Lets the browser-side stale detector distinguish "agent is quiet but
+             alive" from "stream is dead". The client's onmessage handler does
+             not see SSE comment lines (``: keepalive``), so we must use a named
+             event whose ``data:`` payload the browser surfaces to JavaScript.
+             The frontend attaches a ``"heartbeat"`` listener that bumps the
+             last-event timestamp, gating the 30s force-reconnect logic on
+             actual liveness rather than agent activity.
+        """
+        try:
+            while True:
+                await asyncio.sleep(15)
+                try:
+                    await resp.write(b"event: heartbeat\ndata: {}\n\n")
+                except (ConnectionResetError, RuntimeError):
+                    # Connection closed by client or runtime; stop heartbeating.
+                    return
+        except asyncio.CancelledError:
+            return
 
     # ---------- helpers ----------
 

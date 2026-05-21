@@ -1,1 +1,0 @@
-@keyframes flashRow{0%{background-color:#00c89538}60%{background-color:#00c8951a}to{background-color:transparent}}.timeline-row{position:relative;transition:background-color .25s ease-out,box-shadow .25s ease-out}.timeline-row-fresh{animation:flashRow 1.4s ease-out}.timeline-row-playing{background-color:#00c89514;box-shadow:inset 3px 0 #00c895}

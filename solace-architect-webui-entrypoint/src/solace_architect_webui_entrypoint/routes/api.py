@@ -90,17 +90,66 @@ async def create_engagement(name: str, owner: str = "anonymous") -> Any:
     return (await project_tools.create_project(name=name, owner=owner)).data
 
 
+# Step statuses that mean "an agent is mid-flight or waiting on the user".
+# archive / clone refuse with 409 when ANY step is in one of these states —
+# otherwise the action races the agent: archive can hide a project the user
+# is actively driving, clone makes a copy of mid-flight state that doesn't
+# reflect the source's in-progress decisions.
+_ACTIVE_STATES = {"NEEDS_CONTEXT", "IN_PROGRESS"}
+
+
+async def _active_step(engagement_id: str) -> Optional[str]:
+    """Return the id of any step currently in NEEDS_CONTEXT or IN_PROGRESS, else None."""
+    try:
+        status = (await lifecycle_tools.get_engagement_status(engagement_id)).data or {}
+        steps = status.get("steps") or {}
+        for step_id, info in steps.items():
+            if (info or {}).get("status") in _ACTIVE_STATES:
+                return step_id
+    except Exception:
+        # If we can't read state, fall through and let the caller proceed — the
+        # guard is defensive, not a hard correctness gate.
+        return None
+    return None
+
+
 async def archive_engagement(project_id: str) -> Any:
+    active = await _active_step(project_id)
+    if active:
+        return {
+            "error": "engagement is mid-flight",
+            "active_step": active,
+            "status_code": 409,
+            "hint": (
+                f"Step '{active}' is currently waiting on you or running. "
+                "Either answer the agent's pending question, restart that step, "
+                "or wait for it to settle before archiving."
+            ),
+        }
     return (await project_tools.archive_project(project_id)).data
 
 
 async def update_engagement(project_id: str, name: str | None = None,
                             description: str | None = None) -> Any:
+    # Metadata-only update (name / description). Safe during active flight —
+    # the agent doesn't read project name / description from lifecycle.
     return (await project_tools.update_project_metadata(
         project_id, name=name, description=description)).data
 
 
 async def clone_engagement(source_project_id: str, new_name: str | None = None) -> Any:
+    active = await _active_step(source_project_id)
+    if active:
+        return {
+            "error": "source engagement is mid-flight",
+            "active_step": active,
+            "status_code": 409,
+            "hint": (
+                f"Step '{active}' is currently waiting on you or running. "
+                "Clone copies artifacts but not in-progress decisions — wait "
+                "for the source to settle or restart the step before cloning."
+            ),
+        }
     return (await project_tools.clone_project(
         source_project_id, new_name=new_name)).data
 
@@ -324,6 +373,60 @@ async def reset_design(engagement_id: str) -> Any:
         "review_step_cleared": True,
         "cascaded_steps": cascade.get("cascaded_steps", []),
         **telemetry_cleared,
+    }
+
+
+async def reset_review(engagement_id: str) -> Any:
+    """Restart the Review phase: wipe review + everything downstream.
+
+    Cascade order: review → validation → event-portal → blueprint. Mirrors
+    Restart Discovery / Restart Design — Decisions are preserved (audit
+    trail), every other downstream artifact + step status + telemetry is
+    cleared. Triggered from the Progress page's "Restart" link on the
+    Review phase tile.
+    """
+    cascade = await _reset_downstream(engagement_id, after_step="design")
+    return {
+        "removed_artifacts": cascade.get("cascaded_artifacts", []),
+        "open_items_superseded": cascade.get("cascaded_open_items_superseded", 0),
+        "findings_cleared": cascade.get("cascaded_findings_cleared", 0),
+        "cascaded_steps": cascade.get("cascaded_steps", []),
+    }
+
+
+async def reset_validation(engagement_id: str) -> Any:
+    """Restart the Validation phase: wipe validation + downstream."""
+    cascade = await _reset_downstream(engagement_id, after_step="review")
+    return {
+        "removed_artifacts": cascade.get("cascaded_artifacts", []),
+        "open_items_superseded": cascade.get("cascaded_open_items_superseded", 0),
+        "cascaded_steps": cascade.get("cascaded_steps", []),
+    }
+
+
+async def reset_event_portal(engagement_id: str) -> Any:
+    """Restart the Event Portal phase: wipe event-portal + blueprint.
+
+    NB: This wipes the provisioning outputs (plan/provisioned/asyncapi) AND
+    the design-time event-portal-model.yaml. The model is a Design output,
+    not a phase output — restarting EP probably shouldn't delete it. We
+    rely on _reset_downstream's special handling to leave it intact.
+    """
+    cascade = await _reset_downstream(engagement_id, after_step="validation")
+    return {
+        "removed_artifacts": cascade.get("cascaded_artifacts", []),
+        "open_items_superseded": cascade.get("cascaded_open_items_superseded", 0),
+        "cascaded_steps": cascade.get("cascaded_steps", []),
+    }
+
+
+async def reset_blueprint(engagement_id: str) -> Any:
+    """Restart the Blueprint phase: wipe blueprint output only (terminal step)."""
+    cascade = await _reset_downstream(engagement_id, after_step="event-portal")
+    return {
+        "removed_artifacts": cascade.get("cascaded_artifacts", []),
+        "open_items_superseded": cascade.get("cascaded_open_items_superseded", 0),
+        "cascaded_steps": cascade.get("cascaded_steps", []),
     }
 
 
@@ -703,44 +806,24 @@ def _identity_key(key: str) -> str:
     return key
 
 
-async def intake_submit(**intake) -> Any:
-    """Create a project + persist the intake; agent dispatch happens via the SAM runtime.
-
-    Persists THREE artifacts:
-      - ``discovery/intake.json``  — lossless raw form payload (re-hydratable into the form)
-      - ``discovery/discovery-brief.yaml`` — normalized YAML view for downstream agents
-      - ``discovery/intake.md`` — human-readable Markdown for handoff / sharing /
-        printing — same content the "Download Markdown" button on the intake
-        form generates, but server-rendered so it's always derivable from
-        the JSON payload and consistent regardless of client.
-
-    Returns: ``{engagement_id, project, open_items}``.
-
-    Accepts both V2 flat shape (project_name, project_type, systems, requirements, …)
-    and V1-style nested shape (project: {name, type}, landscape: {systems, vertical}, …).
+async def _persist_intake_artifacts(eid: str, intake: dict, flat: dict) -> list:
+    """Write the three discovery artifacts + raise blocking open-items for
+    missing required fields. Shared between create and update paths so the
+    on-disk shape stays identical regardless of how intake_submit was called.
     """
     import json, yaml
 
-    flat = _normalize_intake_shape(intake)
-
-    name = flat.get("project_name") or "untitled"
-    p = await project_tools.create_project(name=name)
-    eid = p.data["id"]
-
-    # 1) Raw form payload — lossless, round-trippable. Use the ORIGINAL (un-normalized)
-    # intake so the form can re-hydrate from it byte-perfect.
+    # 1) Raw form payload — lossless, round-trippable. Use the ORIGINAL
+    # (un-normalized) intake so the form can re-hydrate byte-perfect.
     await artifact_tools.write_artifact(
         eid, "discovery/intake.json",
         json.dumps(intake, indent=2, sort_keys=False),
     )
-
     # 2) Discovery brief — the normalized view that downstream agents read.
     brief_yaml = yaml.safe_dump(flat, default_flow_style=False, sort_keys=False)
     await artifact_tools.write_artifact(eid, "discovery/discovery-brief.yaml", brief_yaml)
-
-    # 3) Human-readable Markdown — mirrors the structure of the
-    # frontend's downloadMD() so what the user previewed offline matches
-    # what's stored. Useful for hand-off, printing, email attachments.
+    # 3) Human-readable Markdown — mirrors the structure of the form's
+    # downloadMD() so what the user previewed offline matches what's stored.
     md_content = _intake_to_markdown(intake)
     await artifact_tools.write_artifact(eid, "discovery/intake.md", md_content)
 
@@ -756,7 +839,117 @@ async def intake_submit(**intake) -> Any:
                 source_agent="WebUI-intake",
             )
 
-    return {"engagement_id": eid, "project": p.data, "open_items": open_items}
+    # Opt-out phases marked SKIPPED at intake so the dashboard knows they're
+    # not applicable rather than sitting in NOT_STARTED limbo. The only
+    # opt-in phase today is Event Portal provisioning.
+    prefs = flat.get("preferences") or {}
+    if not prefs.get("provision_event_portal"):
+        await lifecycle_tools.set_step_status(
+            eid, step="event-portal", status="SKIPPED",
+            agent="WebUI-intake",
+            note="Opt-out at intake (preferences.provision_event_portal=false).",
+        )
+
+    return open_items
+
+
+async def intake_submit(**intake) -> Any:
+    """Create a NEW engagement, OR re-submit an existing one (edit-mode).
+
+    Edit-mode semantics — if the payload includes ``engagement_id``, treat as
+    UPDATE: cascade-wipe every downstream phase (`_reset_downstream(after_step
+    ="intake")` clears discovery → ... → blueprint so design / review /
+    validation / event-portal / blueprint don't sit on stale inputs), then
+    re-write the three discovery artifacts on top of the existing engagement.
+    Decisions in meta/decisions.yaml are preserved as audit trail (same
+    default as Restart Discovery). This fixes the surprise where editing
+    intake to fix a typo would otherwise create a second engagement.
+
+    Otherwise (no engagement_id) — current behavior: create a new project
+    and write the artifacts fresh.
+
+    Persists THREE artifacts in both paths:
+      - ``discovery/intake.json``  — lossless raw form payload (re-hydratable
+                                     into the form)
+      - ``discovery/discovery-brief.yaml`` — normalized YAML view for agents
+      - ``discovery/intake.md`` — human-readable Markdown for handoff /
+        printing / sharing
+
+    Returns: ``{engagement_id, project, open_items, mode: "create"|"update"}``.
+
+    Accepts both V2 flat shape (project_name, project_type, systems,
+    requirements, …) and V1-style nested shape (project: {name, type},
+    landscape: {systems, vertical}, …).
+    """
+    flat = _normalize_intake_shape(intake)
+
+    # ---- Update path: engagement_id present in payload ----
+    existing_eid = intake.get("engagement_id") or flat.get("engagement_id")
+    if existing_eid:
+        # Strip engagement_id from what we persist so re-hydration doesn't
+        # confuse the form (the id is in the URL, not in the form fields).
+        intake = {k: v for k, v in intake.items() if k != "engagement_id"}
+        flat.pop("engagement_id", None)
+
+        # Confirm the engagement exists under the caller's user namespace.
+        try:
+            projects = (await project_tools.list_projects(include_archived=True)).data or []
+        except Exception:
+            projects = []
+        if not any(p.get("id") == existing_eid for p in projects):
+            return {
+                "error": "engagement not found under your namespace",
+                "engagement_id": existing_eid,
+                "status_code": 404,
+            }
+        # Refuse to overwrite a mid-flight engagement (same guard as archive /
+        # clone). Users with a NEEDS_CONTEXT step should answer the pending
+        # question or Restart first, not silently wipe their state.
+        active = await _active_step(existing_eid)
+        if active:
+            return {
+                "error": "engagement is mid-flight",
+                "engagement_id": existing_eid,
+                "active_step": active,
+                "status_code": 409,
+                "hint": (
+                    f"Step '{active}' is currently running or waiting on you. "
+                    "Either answer the agent's pending question, restart that step, "
+                    "or wait for it to settle before re-submitting the intake."
+                ),
+            }
+
+        # Cascade-wipe Discovery onward — same path as the Restart Discovery
+        # button: removes discovery-brief / discovery-summary, clears the
+        # discovery step status, supersedes discovery-sourced open-items, and
+        # cascades to design / review / validation / event-portal / blueprint.
+        # The freshly-written intake.json + discovery-brief.yaml + intake.md
+        # land on top of the cleared state below.
+        cascade = await reset_discovery(existing_eid)
+        # Optionally rename the project if the form's name changed.
+        new_name = flat.get("project_name")
+        if new_name:
+            try:
+                await project_tools.update_project_metadata(existing_eid, name=new_name)
+            except Exception:
+                pass
+
+        open_items = await _persist_intake_artifacts(existing_eid, intake, flat)
+        proj = next((p for p in projects if p.get("id") == existing_eid), None) or {"id": existing_eid}
+        return {
+            "engagement_id": existing_eid,
+            "project": proj,
+            "open_items": open_items,
+            "mode": "update",
+            "cascaded": cascade,
+        }
+
+    # ---- Create path: no engagement_id ----
+    name = flat.get("project_name") or "untitled"
+    p = await project_tools.create_project(name=name)
+    eid = p.data["id"]
+    open_items = await _persist_intake_artifacts(eid, intake, flat)
+    return {"engagement_id": eid, "project": p.data, "open_items": open_items, "mode": "create"}
 
 
 def _intake_to_markdown(intake: dict) -> str:
@@ -1047,6 +1240,10 @@ API_ROUTES = [
     ("POST", "/api/engagements/{engagement_id}/lifecycle/{step}/mark-done", mark_step_done),
     ("DELETE","/api/engagements/{engagement_id}/discovery",   reset_discovery),
     ("DELETE","/api/engagements/{engagement_id}/design",      reset_design),
+    ("DELETE","/api/engagements/{engagement_id}/review",      reset_review),
+    ("DELETE","/api/engagements/{engagement_id}/validation",  reset_validation),
+    ("DELETE","/api/engagements/{engagement_id}/event-portal", reset_event_portal),
+    ("DELETE","/api/engagements/{engagement_id}/blueprint",   reset_blueprint),
     # Intake
     ("POST", "/api/intake/preview",                           intake_preview),
     ("GET",  "/api/intake/download-yaml",                     intake_download_yaml),

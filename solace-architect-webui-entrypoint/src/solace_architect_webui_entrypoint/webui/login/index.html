@@ -82,7 +82,13 @@
         const me = await fetch("/api/auth/me").then(r => r.json());
         if (me.first_run) document.getElementById("first-run").classList.add("shown");
         if (me.enable_signup) document.getElementById("signup-link").style.display = "";
-        if (me.authenticated) window.location.href = "/";   // already logged in
+        if (me.authenticated) {
+          // Already logged in — honor ?next= so a session-expiry redirect
+          // (set by the dashboard's redirectToLoginPreservingPath helper)
+          // bounces the user back to where they were after re-auth.
+          const params = new URLSearchParams(window.location.search);
+          window.location.href = params.get("next") || "/";
+        }
       } catch (e) { /* leave UI in default state */ }
     })();
 

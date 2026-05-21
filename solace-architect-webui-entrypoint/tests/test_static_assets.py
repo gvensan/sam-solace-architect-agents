@@ -98,33 +98,26 @@ def test_dashboard_styles_have_dark_mode_palette():
     assert "--primary:" in css and "--accent:" in css
 
 
-# ---------- Visualizer (forked from sam-visualizer) ----------
+# ---------- Visualizer decoupled ----------
+# The visualizer was extracted to a standalone repo so it can be run as its
+# own process against any broker. The entrypoint no longer serves /visualizer
+# routes or ships webui/visualizer/ assets. Assertions below guard against
+# accidental re-introduction.
 
 
-def test_visualizer_bundle_present():
-    """Built visualizer assets ship in the wheel; users don't need Node."""
-    viz = PKG_ROOT / "webui" / "visualizer"
-    assert viz.is_dir(), "webui/visualizer/ missing — run `make visualizer-build`"
-    index = viz / "index.html"
-    assert index.exists(), "visualizer index.html missing — run `make visualizer-build`"
-    # Asset paths must be prefixed with /visualizer/ (vite base config),
-    # otherwise the bundle would 404 when mounted under that route.
-    text = index.read_text()
-    assert "/visualizer/assets/" in text, (
-        "visualizer index.html asset URLs are not prefixed with /visualizer/ — "
-        "rebuild via `make visualizer-build` with vite.config.ts base='/visualizer/'"
+def test_visualizer_bundle_not_shipped():
+    """Visualizer was decoupled; bundle must not ship in the wheel."""
+    assert not (PKG_ROOT / "webui" / "visualizer").exists(), (
+        "webui/visualizer/ should not exist — the visualizer is now a standalone repo. "
+        "Delete the directory if it has reappeared."
     )
-    # At least one JS bundle file must exist under assets/.
-    assets = viz / "assets"
-    assert assets.is_dir()
-    js_files = list(assets.glob("*.js"))
-    assert js_files, "no .js bundle under visualizer/assets/"
 
 
-def test_sidebar_has_live_view_link():
-    """Dashboard sidebar exposes the visualizer as a Diagnostics → Live View entry."""
+def test_sidebar_has_no_visualizer_link():
+    """Dashboard sidebar must not link to the (removed) embedded visualizer."""
     html = (PKG_ROOT / "webui" / "index.html").read_text()
-    assert 'id="live-nav"' in html, "Diagnostics sidebar section missing"
-    assert 'id="visualizer-link"' in html, "visualizer link element missing"
+    assert "visualizer-link" not in html, "index.html still references the removed visualizer link"
+    assert "live-nav" not in html, "index.html still has the Diagnostics → Live View section"
     js = (PKG_ROOT / "webui" / "assets" / "app.js").read_text()
-    assert "visualizer-link" in js, "app.js doesn't wire visualizer link href to active engagement"
+    assert "visualizer-link" not in js, "app.js still wires the removed visualizer link"
+    assert "/visualizer" not in js, "app.js still references /visualizer URLs"

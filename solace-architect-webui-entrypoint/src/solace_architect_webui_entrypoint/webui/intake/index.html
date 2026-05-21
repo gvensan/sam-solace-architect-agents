@@ -1364,6 +1364,35 @@ async function submitToServer() {
   ].join('\n');
   const yaml = yamlHeader + toYAML(data) + '\n';
 
+  // When the form was loaded via /intake/edit/{engagement_id}, include the
+  // engagement_id in the payload so intake_submit takes the UPDATE path
+  // (cascade-wipe Discovery onward + overwrite the three intake artifacts on
+  // the existing engagement) instead of creating a second project. Identity
+  // of the engagement comes from the URL, not a form field.
+  const _editMatch = window.location.pathname.match(/^\/intake\/edit\/([^/]+)/);
+  if (_editMatch) {
+    const eid = decodeURIComponent(_editMatch[1]);
+    // Re-submit cascades a Restart-Discovery wipe (design / review /
+    // validation / event-portal / blueprint cleared). Confirm before we
+    // throw work away on the user's behalf.
+    const ok = window.confirm(
+      `Re-submit intake for "${eid}"?\n\n` +
+      `This will WIPE everything downstream of Discovery:\n` +
+      `  • Design (all scopes)\n` +
+      `  • Reviews + findings\n` +
+      `  • Validation\n` +
+      `  • Event Portal\n` +
+      `  • Blueprint\n\n` +
+      `Recorded decisions (meta/decisions.yaml) are preserved as audit trail.\n\n` +
+      `Continue?`
+    );
+    if (!ok) {
+      showSubmitResult(false, 'Cancelled — engagement left unchanged.');
+      return;
+    }
+    data.engagement_id = eid;
+  }
+
   try {
     // V2 endpoint: /api/intake/submit accepts the form payload as the body.
     // The adapter spreads the keys as kwargs to intake_submit(**intake).

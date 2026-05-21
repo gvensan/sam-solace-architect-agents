@@ -92,6 +92,7 @@ Add to `.env` in the SAM project root (the directory you run `sam run` from):
 | `WEBUI_HOST` | `0.0.0.0` | Bind address. |
 | `WEBUI_ENTRYPOINT_ID` | `sa-webui-ep-01` | Unique entrypoint ID — change when running multiple instances against one broker. |
 | `WEBUI_REQUIRE_AUTH` | `true` | Set `false` to bypass login entirely (dev only). |
+| `WEBUI_SESSION_TTL_HOURS` | `168` (7 days) | How long a successful login stays valid before re-auth. Drives both the SQLite-side `expires_at` and the browser cookie's `max_age`. Common alternatives: `24` (one workday), `8` (single shift), `720` (30 days). Floored at 1 hour. The dashboard polls `/api/auth/me` every 60s; if the session has expired, the user is bounced to `/login?next=<current-path>` automatically. |
 | `WEBUI_BRANDING_OVERRIDES` | *(blank)* | Optional path to a branding YAML overlay; defaults to `solace_architect_core`'s bundled `branding.yaml`. |
 | `AUTH_TYPE` | `none` | `none` = local user/password (the Phase 1 default). `oidc` is reserved for Phase 2 (not yet wired). |
 | `OIDC_ISSUER`, `OIDC_CLIENT_ID` | — | Only when `AUTH_TYPE=oidc` (Phase 2, future). |
