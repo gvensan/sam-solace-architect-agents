@@ -1377,13 +1377,15 @@ async function submitToServer() {
     // throw work away on the user's behalf.
     const ok = window.confirm(
       `Re-submit intake for "${eid}"?\n\n` +
-      `This will WIPE everything downstream of Discovery:\n` +
+      `This will WIPE everything downstream of Intake:\n` +
+      `  • Discovery (brief + summary)\n` +
       `  • Design (all scopes)\n` +
       `  • Reviews + findings\n` +
       `  • Validation\n` +
-      `  • Event Portal\n` +
+      `  • Event Portal (local artifacts only — Cloud objects not deprovisioned)\n` +
       `  • Blueprint\n\n` +
-      `Recorded decisions (meta/decisions.yaml) are preserved as audit trail.\n\n` +
+      `Phase-authored decisions in meta/decisions.yaml are also dropped.\n` +
+      `Orchestrator flow decisions are preserved.\n\n` +
       `Continue?`
     );
     if (!ok) {

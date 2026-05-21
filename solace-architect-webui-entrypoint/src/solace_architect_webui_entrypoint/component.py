@@ -287,8 +287,19 @@ class SolaceArchitectWebuiComponent(BaseGatewayComponent):
                 self._site = web.TCPSite(self._runner, host=self._host, port=self._port)
                 loop.run_until_complete(self._site.start())
 
-                log.info("%s WebUI listening at http://%s:%d",
-                         self.log_identifier, self._host, self._port)
+                # Build a clickable URL for the operator. When bound to 0.0.0.0
+                # or :: (all interfaces), point the user at localhost — that's
+                # what they'll actually type into a browser.
+                _browser_host = (
+                    "localhost"
+                    if self._host in ("0.0.0.0", "::", "")
+                    else self._host
+                )
+                _browser_url = f"http://{_browser_host}:{self._port}"
+                _banner = "─" * (len(_browser_url) + 20)
+                log.info("%s %s", self.log_identifier, _banner)
+                log.info("%s  WebUI ready → %s", self.log_identifier, _browser_url)
+                log.info("%s %s", self.log_identifier, _banner)
                 self._http_ready.set()
 
                 loop.run_forever()    # serve requests until _stop_listener triggers loop.stop

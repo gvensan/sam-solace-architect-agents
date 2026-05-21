@@ -384,6 +384,33 @@ body[data-chat="closed"] .chat-panel { display: none; }
 @keyframes chat-cursor { 50% { opacity: 0; } }
 .chat-msg.agent-error { color: #b00020; border-color: #b00020; }
 
+/* Switch-agent suggestion chip — deterministically emitted by the
+   orchestrator's _peer_agent_switch_hint patch when the same peer agent
+   has been delegated to 2+ times in a session. See renderSwitchAgentChip()
+   in app.js. Non-blocking sidecar; user can Switch or Dismiss. */
+.chat-msg.switch-agent-card {
+  max-width: 95%;
+  padding: 10px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--bg);
+  display: flex; flex-direction: column; gap: 8px;
+  white-space: normal;
+}
+.switch-agent-body { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; line-height: 1.4; }
+.switch-agent-icon { font-size: 14px; flex-shrink: 0; }
+.switch-agent-text { color: var(--text); }
+.switch-agent-actions { display: flex; gap: 6px; }
+.switch-agent-btn {
+  padding: 4px 10px; font-size: 12px; cursor: pointer;
+  border: 1px solid var(--border); border-radius: 3px;
+  background: var(--bg-elev, transparent); color: var(--text);
+}
+.switch-agent-btn.primary { border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.switch-agent-btn.primary:hover:not(:disabled) { background: var(--accent); color: var(--bg); }
+.switch-agent-btn.secondary:hover { background: var(--border); }
+.switch-agent-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.switch-agent-done { font-size: 13px; color: var(--accent); }
+
 /* Interactive question card (Phase B of discovery Q&A UX).
    See solace_architect_core.tools.interaction_tools.ask_user_question +
    the renderQuestionCard() function in app.js. */

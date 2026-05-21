@@ -25,11 +25,22 @@ log = logging.getLogger(__name__)
 def init(*args, **kwargs):
     """Plugin init hook — runs once when SAM starts the agent."""
     from solace_architect_core._sam_telemetry_patch import install as _install_telemetry_patch
+    from solace_architect_core._mcp_schema_guard import install as _install_mcp_schema_guard
 
     _install_telemetry_patch()
+    # MCP schema guard: the EP Designer MCP server occasionally registers
+    # tools whose JSON Schema crashes google-adk's _to_gemini_schema
+    # converter ("'NoneType' object is not subscriptable"). Without this
+    # guard, ONE bad MCP tool aborts the entire LLM call — every chat
+    # to SAEventPortalAgent fails with "An unexpected error occurred…",
+    # even for questions that wouldn't have needed MCP at all. The guard
+    # catches the per-tool conversion error, logs the offender, and
+    # omits just that tool from the LLM request. Everything else keeps
+    # working.
+    _install_mcp_schema_guard()
     log.info(
         "SAEventPortalAgent lifecycle.init() — plugin package imported, "
-        "telemetry patch installed"
+        "telemetry patch installed, MCP schema guard installed"
     )
     return None
 

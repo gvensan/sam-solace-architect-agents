@@ -234,6 +234,46 @@ async def mark_step_done(engagement_id: str, step: str, status: str = "DONE",
     )).data
 
 
+# source_agent → lifecycle phase. Used by restart paths to drop decisions
+# tied to phases being wiped. SAOrchestratorAgent decisions are cross-cutting
+# (flow / auto-advance / phase-routing choices, not phase-output decisions)
+# so they are NOT mapped to any single phase and survive any restart.
+_AGENT_TO_PHASE = {
+    "SADiscoveryAgent": "discovery",
+    "SADomainAgent": "design",
+    "SAArchitectReviewerAgent": "review",
+    "SADeveloperReviewerAgent": "review",
+    "SAOpsReviewerAgent": "review",
+    "SASecurityReviewerAgent": "review",
+    "SAValidationAgent": "validation",
+    "SAEventPortalAgent": "event-portal",
+    "SABlueprintAgent": "blueprint",
+}
+
+
+async def _drop_decisions_for_phases(engagement_id: str, phases: set[str]) -> int:
+    """Remove every decision whose source_agent maps into ``phases``.
+
+    Returns the number of decisions removed. Orchestrator and any
+    unmapped-agent decisions are preserved.
+    """
+    try:
+        data = read_yaml(engagement_id, "meta/decisions.yaml", default={"decisions": []})
+    except Exception:
+        return 0
+    decisions = (data or {}).get("decisions", []) or []
+    if not decisions:
+        return 0
+    kept = [
+        d for d in decisions
+        if _AGENT_TO_PHASE.get(d.get("source_agent", "")) not in phases
+    ]
+    dropped = len(decisions) - len(kept)
+    if dropped:
+        write_yaml(engagement_id, "meta/decisions.yaml", {"decisions": kept})
+    return dropped
+
+
 async def reset_discovery(engagement_id: str) -> Any:
     """Hard-reset the discovery step.
 
@@ -241,6 +281,9 @@ async def reset_discovery(engagement_id: str) -> Any:
       - discovery/discovery-brief.yaml
       - discovery/discovery-summary.md
       - the discovery entry in meta/engagement-status.yaml
+      - every decision in meta/decisions.yaml authored by SADiscoveryAgent,
+        plus all decisions authored by downstream phases via cascade.
+        Orchestrator-authored decisions (flow choices) are preserved.
     Marks open-items with source='discovery' as 'superseded' (we don't
     hard-delete in case a prior agent turn referenced an item id).
     """
@@ -274,17 +317,24 @@ async def reset_discovery(engagement_id: str) -> Any:
                 )
                 superseded += 1
 
+    # Drop discovery-authored decisions before cascading. The cascade drops
+    # downstream-phase decisions in its own loop, so by the time we return
+    # decisions_cleared = discovery + every downstream phase.
+    decisions_cleared = await _drop_decisions_for_phases(engagement_id, {"discovery"})
+
     # Cascade-wipe every downstream phase (design through blueprint) — they
     # all derive from Discovery, so re-running with stale design/review/etc
     # would leave the engagement in a contradictory state.
     cascade = await _reset_downstream(engagement_id, after_step="discovery")
     removed.extend(cascade.get("cascaded_artifacts", []))
     superseded += cascade.get("cascaded_open_items_superseded", 0)
+    decisions_cleared += cascade.get("cascaded_decisions_cleared", 0)
 
     return {
         "removed_artifacts": removed,
         "open_items_superseded": superseded,
         "findings_cleared": cascade.get("cascaded_findings_cleared", 0),
+        "decisions_cleared": decisions_cleared,
         "cascaded_steps": cascade.get("cascaded_steps", []),
         **telemetry_cleared,
     }
@@ -316,9 +366,10 @@ async def reset_design(engagement_id: str) -> Any:
 
     Open-items with source='domain' are marked as superseded.
 
-    Decisions in meta/decisions.yaml are intentionally NOT touched —
-    they're an immutable audit trail; a fresh design pass should be
-    aware of prior decisions and choose whether to confirm or revise.
+    Decisions authored by SADomainAgent in meta/decisions.yaml are
+    dropped (a fresh design pass starts with a clean ledger). Decisions
+    from downstream phases are dropped by the cascade. Orchestrator
+    decisions (cross-cutting flow choices) are preserved.
     """
     removed = []
     # list_artifacts(engagement_id, category=<scope>) returns names like
@@ -357,6 +408,9 @@ async def reset_design(engagement_id: str) -> Any:
                 )
                 superseded += 1
 
+    # Drop design-authored decisions before cascading.
+    decisions_cleared = await _drop_decisions_for_phases(engagement_id, {"design"})
+
     # Cascade-wipe every phase downstream of design — review, validation,
     # event-portal, blueprint — since they all derive from the design
     # artifacts we just deleted. Without this, a re-run of Design would
@@ -365,11 +419,13 @@ async def reset_design(engagement_id: str) -> Any:
     cascade = await _reset_downstream(engagement_id, after_step="design")
     removed.extend(cascade.get("cascaded_artifacts", []))
     superseded += cascade.get("cascaded_open_items_superseded", 0)
+    decisions_cleared += cascade.get("cascaded_decisions_cleared", 0)
 
     return {
         "removed_artifacts": removed,
         "open_items_superseded": superseded,
         "findings_cleared": cascade.get("cascaded_findings_cleared", 0),
+        "decisions_cleared": decisions_cleared,
         "review_step_cleared": True,
         "cascaded_steps": cascade.get("cascaded_steps", []),
         **telemetry_cleared,
@@ -379,17 +435,18 @@ async def reset_design(engagement_id: str) -> Any:
 async def reset_review(engagement_id: str) -> Any:
     """Restart the Review phase: wipe review + everything downstream.
 
-    Cascade order: review → validation → event-portal → blueprint. Mirrors
-    Restart Discovery / Restart Design — Decisions are preserved (audit
-    trail), every other downstream artifact + step status + telemetry is
-    cleared. Triggered from the Progress page's "Restart" link on the
-    Review phase tile.
+    Cascade order: review → validation → event-portal → blueprint. Every
+    artifact, step status, telemetry row, source-tagged open-item, and
+    phase-authored decision in those phases is dropped. Orchestrator-
+    authored decisions (cross-cutting flow choices) are preserved.
+    Triggered from the Progress page's "Restart" link on the Review tile.
     """
     cascade = await _reset_downstream(engagement_id, after_step="design")
     return {
         "removed_artifacts": cascade.get("cascaded_artifacts", []),
         "open_items_superseded": cascade.get("cascaded_open_items_superseded", 0),
         "findings_cleared": cascade.get("cascaded_findings_cleared", 0),
+        "decisions_cleared": cascade.get("cascaded_decisions_cleared", 0),
         "cascaded_steps": cascade.get("cascaded_steps", []),
     }
 
@@ -400,6 +457,7 @@ async def reset_validation(engagement_id: str) -> Any:
     return {
         "removed_artifacts": cascade.get("cascaded_artifacts", []),
         "open_items_superseded": cascade.get("cascaded_open_items_superseded", 0),
+        "decisions_cleared": cascade.get("cascaded_decisions_cleared", 0),
         "cascaded_steps": cascade.get("cascaded_steps", []),
     }
 
@@ -416,6 +474,7 @@ async def reset_event_portal(engagement_id: str) -> Any:
     return {
         "removed_artifacts": cascade.get("cascaded_artifacts", []),
         "open_items_superseded": cascade.get("cascaded_open_items_superseded", 0),
+        "decisions_cleared": cascade.get("cascaded_decisions_cleared", 0),
         "cascaded_steps": cascade.get("cascaded_steps", []),
     }
 
@@ -426,6 +485,7 @@ async def reset_blueprint(engagement_id: str) -> Any:
     return {
         "removed_artifacts": cascade.get("cascaded_artifacts", []),
         "open_items_superseded": cascade.get("cascaded_open_items_superseded", 0),
+        "decisions_cleared": cascade.get("cascaded_decisions_cleared", 0),
         "cascaded_steps": cascade.get("cascaded_steps", []),
     }
 
@@ -509,6 +569,9 @@ async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
     removed = []
     findings_cleared = 0
     superseded = 0
+    # Drop every decision authored by an agent that owns one of the cascaded
+    # phases — done in a single pass so we rewrite decisions.yaml just once.
+    decisions_cleared = await _drop_decisions_for_phases(engagement_id, set(to_wipe))
 
     if "design" in to_wipe:
         for scope in _DESIGN_SCOPE_FOLDERS:
@@ -596,6 +659,7 @@ async def _reset_downstream(engagement_id: str, *, after_step: str) -> dict:
         "cascaded_artifacts": removed,
         "cascaded_findings_cleared": findings_cleared,
         "cascaded_open_items_superseded": superseded,
+        "cascaded_decisions_cleared": decisions_cleared,
     }
 
 
@@ -861,9 +925,10 @@ async def intake_submit(**intake) -> Any:
     ="intake")` clears discovery → ... → blueprint so design / review /
     validation / event-portal / blueprint don't sit on stale inputs), then
     re-write the three discovery artifacts on top of the existing engagement.
-    Decisions in meta/decisions.yaml are preserved as audit trail (same
-    default as Restart Discovery). This fixes the surprise where editing
-    intake to fix a typo would otherwise create a second engagement.
+    Phase-authored decisions in meta/decisions.yaml are dropped (same default
+    as Restart Discovery); orchestrator decisions survive. This fixes the
+    surprise where editing intake to fix a typo would otherwise create a
+    second engagement.
 
     Otherwise (no engagement_id) — current behavior: create a new project
     and write the artifacts fresh.

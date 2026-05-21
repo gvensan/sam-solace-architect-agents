@@ -269,3 +269,40 @@ async def test_reset_discovery_cascades_through_full_lifecycle():
     assert set(result["cascaded_steps"]) == {
         "design", "review", "validation", "event-portal", "blueprint",
     }
+
+
+@pytest.mark.asyncio
+async def test_reset_discovery_drops_phase_decisions_but_keeps_orchestrator():
+    """Restart wipes phase-authored decisions; orchestrator flow decisions
+    survive. Counts come back in the response payload.
+    """
+    from solace_architect_core.tools import decision_tools
+    from solace_architect_webui_entrypoint.routes.api import reset_discovery
+
+    eid = "decisions-restart-eng"
+
+    # Record one decision per phase + one orchestrator decision.
+    seed = [
+        ("SADiscoveryAgent", "discovery context"),
+        ("SADomainAgent", "design context"),
+        ("SAArchitectReviewerAgent", "arch review context"),
+        ("SADeveloperReviewerAgent", "dev review context"),
+        ("SAValidationAgent", "validation context"),
+        ("SAEventPortalAgent", "ep context"),
+        ("SABlueprintAgent", "blueprint context"),
+        ("SAOrchestratorAgent", "orchestrator flow context"),
+    ]
+    for agent, ctx in seed:
+        await decision_tools.record_decision(
+            eid, context=ctx, recommendation="r", selected="s",
+            rationale="r", source_agent=agent,
+        )
+
+    result = await reset_discovery(eid)
+
+    # Seven phase-authored decisions wiped; one orchestrator decision survives.
+    assert result["decisions_cleared"] == 7, result
+    remaining = (await decision_tools.read_decisions(eid)).data
+    assert len(remaining) == 1, remaining
+    assert remaining[0]["source_agent"] == "SAOrchestratorAgent"
+    assert remaining[0]["context"] == "orchestrator flow context"

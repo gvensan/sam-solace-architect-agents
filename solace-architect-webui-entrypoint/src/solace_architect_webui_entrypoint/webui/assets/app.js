@@ -1291,7 +1291,7 @@
     const restartDiscoveryRow = `
       <div class="progress-cta-secondary-actions">
         <button id="restart-discovery-btn" class="cta-link-danger"
-                title="Re-run Discovery from scratch. Wipes discovery/* artifacts and the discovery step status; meta/decisions.yaml is preserved as audit trail. Only use this if requirements have materially changed.">
+                title="Re-run Discovery from scratch. Cascade-wipes Discovery + every downstream phase (artifacts, step status, telemetry, findings, phase-authored decisions). Orchestrator flow decisions are preserved. Intake form is not touched. Only use this if requirements have materially changed.">
           ↺ Restart Discovery
         </button>
         <span class="secondary-action-hint">— requirements materially changed? wipe Discovery and start fresh</span>
@@ -1299,7 +1299,7 @@
     const restartDesignRow = `
       <div class="progress-cta-secondary-actions">
         <button id="restart-design-btn" class="cta-link-danger"
-                title="Re-run Design from scratch. Wipes every design scope artifact (topic-design, broker-select, …) and the design step status; meta/decisions.yaml is preserved. Only use this if the discovery brief or constraints have changed.">
+                title="Re-run Design from scratch. Wipes every design scope artifact (topic-design, broker-select, …), the design step status, and every downstream phase. Phase-authored decisions are dropped; orchestrator flow decisions are preserved. Only use this if the discovery brief or constraints have changed.">
           ↺ Restart Design
         </button>
         <span class="secondary-action-hint">— discovery brief changed? wipe design output and start fresh</span>
@@ -1733,13 +1733,17 @@
         <h2>Restart Discovery for <code>${escapeHtml(eid)}</code>?</h2>
         <p>This will:</p>
         <ul style="margin: 6px 0 12px 18px; font-size: 13px; line-height: 1.6;">
-          <li>delete <code>discovery/discovery-brief.yaml</code> and
-              <code>discovery/discovery-summary.md</code></li>
-          <li>mark any open-items recorded by Discovery as <code>superseded</code></li>
-          <li>clear the Discovery entry in <code>meta/engagement-status.yaml</code></li>
+          <li>delete <code>discovery/*</code> and every downstream phase artifact
+              (design, review, validation, event-portal, blueprint)</li>
+          <li>clear step status + telemetry for Discovery and every downstream phase</li>
+          <li>mark every phase-tagged open-item as <code>superseded</code></li>
+          <li>empty <code>meta/findings.yaml</code></li>
+          <li>drop every phase-authored decision from <code>meta/decisions.yaml</code>
+              (orchestrator flow decisions are preserved)</li>
         </ul>
-        <p>Your intake form is <strong>not</strong> touched. Decisions and findings
-        recorded by other agents are <strong>not</strong> touched.</p>
+        <p>Your intake form is <strong>not</strong> touched. External Solace Cloud
+        Event Portal objects (if you provisioned any) are <strong>not</strong> deprovisioned —
+        only the local artifacts are cleared.</p>
         <p style="margin-top: 12px;">Type the project id <code>${escapeHtml(eid)}</code>
         to confirm:</p>
         <input id="restart-confirm-input" type="text" autocomplete="off"
@@ -1782,9 +1786,10 @@
 
   // Restart Design — mirrors Restart Discovery. Wipes every artifact
   // under the nine SADomainAgent scope folders, supersedes any
-  // domain-source open-items, and clears the design entry in
-  // engagement-status.yaml. Decisions are intentionally preserved
-  // (immutable audit trail).
+  // domain-source open-items, drops domain-authored decisions, and
+  // cascade-wipes every downstream phase (review, validation,
+  // event-portal, blueprint). Orchestrator-authored decisions
+  // (cross-cutting flow choices) are preserved.
   function openRestartDesignModal(eid) {
     openModal(`
       <div class="modal-section">
@@ -1799,9 +1804,11 @@
           <li>mark any open-items recorded by Domain as <code>superseded</code></li>
           <li>clear the Design entry in <code>meta/engagement-status.yaml</code></li>
         </ul>
-        <p>Your discovery brief is <strong>not</strong> touched. Recorded
-        decisions in <code>meta/decisions.yaml</code> are <strong>preserved</strong>
-        as an audit trail — your next design pass can revisit or override them.</p>
+        <p>Your discovery brief is <strong>not</strong> touched. Phase-authored
+        decisions in <code>meta/decisions.yaml</code> are <strong>dropped</strong>
+        (a fresh design pass starts with a clean ledger); orchestrator flow
+        decisions are preserved. External Solace Cloud Event Portal objects
+        (if any) are <strong>not</strong> deprovisioned.</p>
         <p style="margin-top: 12px;">Type the project id <code>${escapeHtml(eid)}</code>
         to confirm:</p>
         <input id="restart-design-confirm-input" type="text" autocomplete="off"
@@ -1915,8 +1922,9 @@
         </ul>
         <p>${copy.cascadeNote}</p>
         <p style="margin-top: 8px;">Earlier phases (intake, discovery, design, and any phases before
-        ${escapeHtml(label)}) are <strong>not</strong> touched. Recorded decisions in
-        <code>meta/decisions.yaml</code> are <strong>preserved</strong>.</p>
+        ${escapeHtml(label)}) are <strong>not</strong> touched. Phase-authored decisions
+        from ${escapeHtml(label)} and any cascaded phases are <strong>dropped</strong>;
+        orchestrator flow decisions are preserved.</p>
         <p style="margin-top: 12px;">Type the project id <code>${escapeHtml(eid)}</code> to confirm:</p>
         <input id="${inputId}" type="text" autocomplete="off"
                style="width: 100%; padding: 8px 10px; font-family: 'Space Mono', monospace;
@@ -3034,11 +3042,24 @@
   // While streaming, hide the raw ```question JSON block behind a
   // "preparing form…" placeholder. We can't safely partial-parse the
   // JSON yet; the form materializes on finalizeAgentBubble.
+  // Also hides ```switch_agent blocks (deterministic chip emitted by the
+  // orchestrator's _peer_agent_switch_hint patch). The chip materializes
+  // on finalize via parseSwitchAgentBlocks; until then the JSON would
+  // bleed into the streaming bubble as visible noise.
   function maskQuestionBlockDuringStream(text) {
-    const idx = text.indexOf("```question");
-    if (idx === -1) return text;
-    const preamble = text.slice(0, idx).trimEnd();
-    return preamble + (preamble ? "\n\n" : "") + "📝 Preparing question…";
+    let masked = text;
+    const qIdx = masked.indexOf("```question");
+    if (qIdx !== -1) {
+      const preamble = masked.slice(0, qIdx).trimEnd();
+      masked = preamble + (preamble ? "\n\n" : "") + "📝 Preparing question…";
+    }
+    const sIdx = masked.indexOf("```switch_agent");
+    if (sIdx !== -1) {
+      // Strip the switch_agent block silently — no placeholder needed,
+      // it's a sidecar suggestion not a form blocking the conversation.
+      masked = masked.slice(0, sIdx).trimEnd();
+    }
+    return masked;
   }
 
   // Classify a streaming text as either a "status pill" (short, single-
@@ -3861,6 +3882,126 @@
     return { cleanText, blocks };
   }
 
+  // Extract ```switch_agent { "to_agent": ..., "reason": ... } ``` blocks.
+  // Emitted deterministically by SAOrchestratorAgent's
+  // _peer_agent_switch_hint patch on the 2nd+ delegation to the same peer
+  // in a session — the chip lets the user one-click switch the chat
+  // dropdown to that peer so follow-ups skip the orchestrator hop.
+  function parseSwitchAgentBlocks(text) {
+    if (!text || text.indexOf("```switch_agent") === -1) {
+      return { cleanText: text, suggestions: [] };
+    }
+    const re = /```switch_agent\s*\n([\s\S]*?)\n```/g;
+    const suggestions = [];
+    let cleanText = text;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      try {
+        const payload = JSON.parse(m[1]);
+        if (payload && typeof payload === "object" && payload.to_agent) {
+          suggestions.push(payload);
+          cleanText = cleanText.replace(m[0], "").trim();
+        }
+      } catch (err) {
+        // Malformed JSON — strip the block anyway so we don't leak raw
+        // JSON into the chat. The orchestrator produces this server-side
+        // so any malformation is our bug, not the user's.
+        cleanText = cleanText.replace(m[0], "").trim();
+      }
+    }
+    return { cleanText, suggestions };
+  }
+
+  // Per-session dismissal storage. We don't want the chip to re-appear
+  // after the user dismissed it for this target THIS session — they're
+  // telling us they prefer staying on the orchestrator for now. A new
+  // browser session (next day, new tab) resets, so the suggestion can
+  // surface again if the iteration pattern recurs.
+  const _SWITCH_DISMISS_KEY = "sa.switch_agent_dismissed";
+  function _getDismissedSwitchTargets() {
+    try {
+      const raw = sessionStorage.getItem(_SWITCH_DISMISS_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch { return []; }
+  }
+  function _addDismissedSwitchTarget(target) {
+    try {
+      const cur = _getDismissedSwitchTargets();
+      if (!cur.includes(target)) cur.push(target);
+      sessionStorage.setItem(_SWITCH_DISMISS_KEY, JSON.stringify(cur));
+    } catch { /* private mode — accept loss of dismissal across reload */ }
+  }
+
+  // Render a single switch-agent suggestion as a clickable chip-row.
+  // Two actions: "Switch to <agent>" (re-targets the chat dropdown,
+  // persists via _setUserPickedAgent) and "Dismiss" (sessionStorage).
+  function renderSwitchAgentChip(suggestion) {
+    const card = document.createElement("div");
+    card.className = "chat-msg agent switch-agent-card";
+    card.dataset.toAgent = suggestion.to_agent;
+
+    const body = document.createElement("div");
+    body.className = "switch-agent-body";
+    const icon = document.createElement("span");
+    icon.className = "switch-agent-icon";
+    icon.textContent = "💡";
+    const text = document.createElement("span");
+    text.className = "switch-agent-text";
+    text.textContent = suggestion.reason || `Switch to ${suggestion.to_agent} for faster follow-ups.`;
+    body.appendChild(icon);
+    body.appendChild(text);
+
+    const actions = document.createElement("div");
+    actions.className = "switch-agent-actions";
+    const switchBtn = document.createElement("button");
+    switchBtn.className = "switch-agent-btn primary";
+    switchBtn.type = "button";
+    switchBtn.textContent = `Switch to ${suggestion.to_agent} →`;
+    switchBtn.addEventListener("click", () => {
+      const select = document.getElementById("chat-agent-select");
+      if (!select) return;
+      // Verify the target is in the dropdown's option list before flipping —
+      // protects against a stale suggestion when the peer has dropped off
+      // the mesh between emission and click.
+      const options = Array.from(select.options).map(o => o.value);
+      if (!options.includes(suggestion.to_agent)) {
+        switchBtn.textContent = `${suggestion.to_agent} unavailable`;
+        switchBtn.disabled = true;
+        return;
+      }
+      _setUserPickedAgent(suggestion.to_agent);
+      select.value = suggestion.to_agent;
+      // Fire `change` so the existing dropdown handler refreshes the
+      // placeholder and tooltip — we DON'T want it to re-call
+      // _setUserPickedAgent (we already did above for clarity), but the
+      // handler's clear-on-default logic is a no-op when the target isn't
+      // PREFERRED_DEFAULT_AGENT, so dispatching is safe.
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      // Collapse the chip into a "switched" confirmation so the user has
+      // visible feedback. Subsequent suggestions for the same target are
+      // suppressed by the dismissal check, but this card stays visible.
+      card.innerHTML = "";
+      const done = document.createElement("div");
+      done.className = "switch-agent-done";
+      done.textContent = `✓ Switched chat to ${suggestion.to_agent}.`;
+      card.appendChild(done);
+    });
+    const dismissBtn = document.createElement("button");
+    dismissBtn.className = "switch-agent-btn secondary";
+    dismissBtn.type = "button";
+    dismissBtn.textContent = "Dismiss";
+    dismissBtn.addEventListener("click", () => {
+      _addDismissedSwitchTarget(suggestion.to_agent);
+      card.remove();
+    });
+    actions.appendChild(switchBtn);
+    actions.appendChild(dismissBtn);
+
+    card.appendChild(body);
+    card.appendChild(actions);
+    return card;
+  }
+
   // Latest finalized agent message — tracked for the drift detector below.
   // When a phase's lifecycle status hasn't advanced but the agent's last
   // message used completion language, the detector surfaces a "Mark
@@ -3871,7 +4012,18 @@
   function finalizeAgentBubble(finalText) {
     const text = (finalText || pendingAgentMsg?.lastText || "").trim();
     if (text) { _lastFinalAgentText = text; _lastFinalAgentTs = Date.now(); }
-    const { cleanText, blocks } = parseQuestionBlocks(text);
+    // Parse question blocks first, THEN switch_agent blocks from the
+    // remaining text. Order matters because a single agent message can
+    // (rarely) carry both — they're independent sidecars.
+    const qResult = parseQuestionBlocks(text);
+    const sResult = parseSwitchAgentBlocks(qResult.cleanText);
+    const cleanText = sResult.cleanText;
+    const blocks = qResult.blocks;
+    // Filter out suggestions the user has already dismissed this session.
+    const dismissed = _getDismissedSwitchTargets();
+    const switchSuggestions = sResult.suggestions.filter(s =>
+      !dismissed.includes(s.to_agent)
+    );
 
     if (pendingAgentMsg) {
       pendingAgentMsg.el.classList.remove("agent-thinking");
@@ -3926,6 +4078,14 @@
     }
     if (blocks.length) chatLog.scrollTop = chatLog.scrollHeight;
 
+    // Render switch-agent suggestion chips after question cards (a chip
+    // is non-blocking; the question card is the user's primary action).
+    for (const sugg of switchSuggestions) {
+      const chip = renderSwitchAgentChip(sugg);
+      chatLog.appendChild(chip);
+    }
+    if (switchSuggestions.length) chatLog.scrollTop = chatLog.scrollHeight;
+
     // Safety net: if the agent emitted a markdown-style multiple-choice
     // question instead of a ```question block (LLM sometimes ignores
     // the tool-call rule), try two pattern detectors and offer a
@@ -3954,7 +4114,7 @@
     // and has no signal that the turn ended. Symptom we hit: Domain
     // recorded the user's decision then stopped emitting tool calls,
     // leaving the chat in apparent limbo.
-    const producedActionable = cleanText || blocks.length || renderedChips || _pendingPhaseHandoffs.length;
+    const producedActionable = cleanText || blocks.length || renderedChips || switchSuggestions.length || _pendingPhaseHandoffs.length;
     if (!producedActionable) {
       renderAgentEmptyCard();
     }
@@ -5042,6 +5202,54 @@
     } catch { return null; }
   }
 
+  // Per-agent domain hints — surfaced as the option's title attribute so the
+  // user gets a tooltip on hover. Stops the most common mistake (sending an
+  // off-topic question to a specialised agent — e.g. "what's the weather" to
+  // SAEventPortalAgent — and getting a confusing crash or refusal in chat).
+  // Keep entries short; tooltips are read-glance, not documentation.
+  const AGENT_DOMAIN_HINTS = {
+    "SAOrchestratorAgent":
+      "Coordinator — routes between phases, fans out to reviewers. Use for general engagement questions.",
+    "SADiscoveryAgent":
+      "Discovery phase — intake refinement, reference-architecture matching. Use at engagement start.",
+    "SADomainAgent":
+      "Design phase — 9 architecture scopes (topic, broker, protocol, integration, mesh, HA/DR, SAM, EP model, migration).",
+    "SAArchitectReviewerAgent":
+      "Architecture-perspective review (5 criteria: component fit, simpler alternatives, trade-offs, pattern alignment, cross-cutting). Non-interactive.",
+    "SADeveloperReviewerAgent":
+      "Developer-perspective review (topic usability, SDK/API choice, schema governance, error handling, onboarding). Non-interactive.",
+    "SAOpsReviewerAgent":
+      "Ops-perspective review (monitoring, failure modes, capacity, runbooks, alerting). Non-interactive.",
+    "SASecurityReviewerAgent":
+      "Security-perspective review (auth, ACLs, TLS, credentials, compliance). Non-interactive.",
+    "SAValidationAgent":
+      "Validation gate — requirement coverage, antipattern scan, consistency. Decides DONE / DONE_WITH_CONCERNS / BLOCKED.",
+    "SAEventPortalAgent":
+      "Live Event Portal provisioning via EP Designer MCP — creates domains, schemas, events, applications. Opt-in only.",
+    "SABlueprintAgent":
+      "Final assembly — architecture narrative, runbook, diagrams, 5 audience packs (HTML+PDF), engagement ZIP. Non-interactive.",
+  };
+  const _DEFAULT_HINT = "Generic SAM agent. For Solace Architect workflow questions try SAOrchestratorAgent or SADiscoveryAgent.";
+
+  // Preferred default agent — SAOrchestratorAgent. Per user requirement, the
+  // dropdown lands on this agent on every fresh page load (and after auth /
+  // engagement switches) unless the user has explicitly picked something else
+  // (persisted in localStorage). Sticky-from-FinalResponse and the gateway's
+  // default_agent_name are now lower-priority fallbacks — used only when
+  // SAOrchestratorAgent isn't discoverable OR the user's previous manual pick
+  // has gone away from the mesh.
+  const PREFERRED_DEFAULT_AGENT = "SAOrchestratorAgent";
+  const _USER_PICK_KEY = "sa.chat_agent_pick";
+  function _getUserPickedAgent() {
+    try { return localStorage.getItem(_USER_PICK_KEY) || ""; } catch { return ""; }
+  }
+  function _setUserPickedAgent(name) {
+    try {
+      if (name) localStorage.setItem(_USER_PICK_KEY, name);
+      else localStorage.removeItem(_USER_PICK_KEY);
+    } catch { /* ignore — localStorage may be unavailable in private mode */ }
+  }
+
   async function loadAgents() {
     if (!chatAgentSelect) return;
     // Preserve whatever the user picked so the 15s re-poll doesn't snap the
@@ -5058,18 +5266,32 @@
       }
       const names = new Set(agents.map(a => a.name));
       // Resolve which agent should end up selected, in this preference order:
-      //   1. User's prior pick in this session (the dropdown value right now).
-      //   2. Sticky agent for the current engagement (captured from the last
-      //      FinalResponse — survives page reload).
-      //   3. Gateway-configured default_agent_name.
-      const sticky = getStickyAgent(currentProjectId());
+      //   1. User's current session pick (the dropdown value right now) — keeps
+      //      the 15s re-poll from snapping the selection back to the default.
+      //   2. User's persistent manual pick (localStorage), if still discovered.
+      //   3. SAOrchestratorAgent — preferred default per user requirement; a
+      //      fresh page always lands here unless explicitly overridden.
+      //   4. Gateway-configured default_agent_name — last-resort fallback if
+      //      SAOrchestratorAgent isn't discoverable on this mesh yet.
+      // Sticky-from-FinalResponse (the agent that last replied) is deliberately
+      // NOT in this chain — it would override the user's choice every time an
+      // orchestrator delegated to a sub-agent, which is the opposite of the
+      // requested behavior.
+      const userPick = _getUserPickedAgent();
       const desired = (previousChoice && names.has(previousChoice)) ? previousChoice
-                    : (sticky && names.has(sticky))                 ? sticky
+                    : (userPick && names.has(userPick))             ? userPick
+                    : (names.has(PREFERRED_DEFAULT_AGENT))           ? PREFERRED_DEFAULT_AGENT
                     : defaultName;
-      chatAgentSelect.innerHTML = agents.map(a =>
-        `<option value="${escapeHtml(a.name)}"${a.name === desired ? " selected" : ""}>${escapeHtml(a.name)}</option>`
-      ).join("");
+      chatAgentSelect.innerHTML = agents.map(a => {
+        const hint = AGENT_DOMAIN_HINTS[a.name] || _DEFAULT_HINT;
+        return `<option value="${escapeHtml(a.name)}" title="${escapeHtml(hint)}"${a.name === desired ? " selected" : ""}>${escapeHtml(a.name)}</option>`;
+      }).join("");
       if (desired) chatAgentSelect.value = desired;
+      // Mirror the selected option's hint onto the <select> itself so the
+      // tooltip is visible even on the closed dropdown (not just per-option
+      // when the menu is open).
+      const selectedHint = AGENT_DOMAIN_HINTS[chatAgentSelect.value] || _DEFAULT_HINT;
+      chatAgentSelect.setAttribute("title", selectedHint);
     } catch (err) {
       chatAgentSelect.innerHTML = `<option value="">(agent discovery failed)</option>`;
     }
@@ -5077,6 +5299,22 @@
   chatAgentSelect?.addEventListener("change", () => {
     // refresh the placeholder to reflect the new agent target
     render();
+    // Keep the closed-dropdown tooltip in sync with the picked agent.
+    const hint = AGENT_DOMAIN_HINTS[chatAgentSelect.value] || _DEFAULT_HINT;
+    chatAgentSelect.setAttribute("title", hint);
+    // Persist the user's explicit pick. The native `change` event only fires
+    // for user-initiated changes (programmatic `.value = X` assignments don't
+    // dispatch it), so this captures exactly the intent we want: "the user
+    // chose this on purpose; remember it for next time, even across reloads
+    // and engagement switches". If they pick the preferred default back, we
+    // CLEAR the override so future fresh visits resume the SAOrchestratorAgent
+    // default cleanly instead of pinning to it forever.
+    const picked = chatAgentSelect.value || "";
+    if (picked && picked !== PREFERRED_DEFAULT_AGENT) {
+      _setUserPickedAgent(picked);
+    } else {
+      _setUserPickedAgent("");
+    }
   });
   // Re-poll periodically so newly-joined agents on the mesh appear in the picker
   setInterval(loadAgents, 15000);
